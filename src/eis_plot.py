@@ -5,35 +5,32 @@ import os
 import re
 import argparse
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-
 def safe_mkdir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
 
-def norm_cell(x) -> str:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return ""
-    return str(x).strip()
 
 def lower_cell(x) -> str:
-    return norm_cell(x).lower()
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    return str(x).strip().lower()
+
 
 def to_float_series(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
-def find_best_header_row(df_raw: pd.DataFrame, keywords: List[str], scan_rows: int = 120) -> Optional[int]:
-    """
-    在前 scan_rows 行中找最像“表头”的行：包含 keywords 的命中数最多。
-    """
+
+def sanitize_filename(s: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
+
+
+def find_best_header_row(df_raw: pd.DataFrame, keywords: List[str], scan_rows: int = 150) -> Optional[int]:
     best_i, best_score = None, 0
     n = min(len(df_raw), scan_rows)
     for i in range(n):
@@ -44,9 +41,10 @@ def find_best_header_row(df_raw: pd.DataFrame, keywords: List[str], scan_rows: i
             best_i = i
     return best_i if best_score > 0 else None
 
+
 def pick_col_idx(header_row: pd.Series, must_contain: List[str]) -> Optional[int]:
     """
-    从 header_row 里挑一个列索引：包含 must_contain 中尽可能多的关键词。
+    Pick the best matching column index by counting how many must_contain keywords appear in the header cell.
     """
     cells = header_row.astype(str).map(lower_cell)
     best_j, best_score = None, 0
@@ -57,334 +55,233 @@ def pick_col_idx(header_row: pd.Series, must_contain: List[str]) -> Optional[int
             best_j = j
     return best_j if best_score > 0 else None
 
-def sanitize_filename(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
 
+def pick_any_col_idx(header_row: pd.Series, any_contains: List[str]) -> Optional[int]:
+    """
+    Pick a column index if header contains ANY of the provided keywords (weaker matching).
+    Prefer more specific (higher count) if multiple match.
+    """
+    cells = header_row.astype(str).map(lower_cell)
+    best_j, best_score = None, 0
+    for j, cell in enumerate(cells):
+        score = sum(1 for kw in any_contains if kw in cell)
+        if score > best_score:
+            best_score = score
+            best_j = j
+    return best_j if best_score > 0 else None
 
-# -----------------------------
-# EIS parsing + plotting
-# -----------------------------
 
 @dataclass
-class EISTable:
-    f_hz: np.ndarray
-    z_real: np.ndarray
-    z_imag: np.ndarray
+class EIS:
+    f: np.ndarray
+    zr: np.ndarray
+    zi: np.ndarray
     sheet: str
-    meta: Dict[str, str]
+    group: Optional[np.ndarray] = None      # cycle/day id, optional
+    group_name: Optional[str] = None        # column name for grouping, optional
 
-def extract_eis_from_sheet(df_raw: pd.DataFrame, sheet_name: str) -> List[EISTable]:
-    """
-    尝试在一个 sheet 中提取 EIS 表（Frequency + Real + Imag）。
-    适配 UDC 常见的“多行表头/合并单元格”情况：
-      1) 先定位表头行（包含 frequency/real/imag）
-      2) 再确定三列索引
-      3) 从表头下一行开始抓取连续的数值行
-    """
-    tables: List[EISTable] = []
 
+def extract_eis(df_raw: pd.DataFrame, sheet_name: str) -> Optional[EIS]:
+    """
+    Extract ONE EIS block from a sheet:
+    - Finds a header row containing frequency/real/imag keywords
+    - Picks frequency, real, imag columns
+    - Optionally picks a cycle/day grouping column if present
+    """
     header_i = find_best_header_row(df_raw, ["frequency", "real", "imag"])
     if header_i is None:
-        return tables
+        return None
 
-    header_row = df_raw.iloc[header_i]
-    j_f = pick_col_idx(header_row, ["frequency"])
-    j_r = pick_col_idx(header_row, ["real"])
-    j_i = pick_col_idx(header_row, ["imag"])
+    header = df_raw.iloc[header_i]
 
+    # Required cols
+    j_f = pick_col_idx(header, ["frequency"])
+    j_r = pick_col_idx(header, ["real"])
+    j_i = pick_col_idx(header, ["imag"])
     if j_f is None or j_r is None or j_i is None:
-        return tables
+        return None
+
+    # Optional grouping col (cycle/day)
+    # In your UDC, common headers include:
+    # "measurement day or cycle", "cycle", "day", "measurement day", "cycle/day"
+    j_g = pick_any_col_idx(
+        header,
+        ["measurement day or cycle", "cycle/day", "cycle", "day", "measurement day", "measurement cycle"]
+    )
 
     df = df_raw.iloc[header_i + 1:].copy()
+
     f = to_float_series(df.iloc[:, j_f])
     zr = to_float_series(df.iloc[:, j_r])
     zi = to_float_series(df.iloc[:, j_i])
 
+    g = None
+    g_name = None
+    if j_g is not None:
+        # grouping may be numeric (cycle/day index) or string; we try numeric first
+        g_series = pd.to_numeric(df.iloc[:, j_g], errors="coerce")
+        # If numeric works for enough rows, use it; else use string version
+        if g_series.notna().sum() >= max(5, int(0.2 * len(g_series))):
+            g = g_series
+        else:
+            g = df.iloc[:, j_g].astype(str).map(lambda x: str(x).strip())
+        g_name = str(header.iloc[j_g]) if header.iloc[j_g] is not None else "cycle/day"
+
     ok = f.notna() & zr.notna() & zi.notna()
+    if g is not None:
+        ok = ok & pd.Series(g).notna()
+
     if ok.sum() < 5:
-        return tables
+        return None
 
     f = f[ok].to_numpy(dtype=float)
     zr = zr[ok].to_numpy(dtype=float)
     zi = zi[ok].to_numpy(dtype=float)
 
-    # 频率应大多数为正
     if np.mean(f > 0) < 0.8:
-        return tables
+        return None
 
-    tables.append(
-        EISTable(
-            f_hz=f,
-            z_real=zr,
-            z_imag=zi,
-            sheet=sheet_name,
-            meta={"header_row": str(header_i), "col_f": str(j_f), "col_real": str(j_r), "col_imag": str(j_i)},
-        )
-    )
-    return tables
+    group_arr = None
+    if g is not None:
+        group_arr = pd.Series(g)[ok].to_numpy()
 
-def plot_nyquist(t: EISTable, out_png: str, invert_imag: bool = False) -> None:
-    x = t.z_real
-    y = (-t.z_imag) if invert_imag else t.z_imag
+    return EIS(f=f, zr=zr, zi=zi, sheet=sheet_name, group=group_arr, group_name=g_name)
 
-    plt.figure()
-    plt.plot(x, y, marker="o", linewidth=1)
+
+def _iter_groups(e: EIS) -> List[Tuple[str, np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Return list of (group_label, f, zr, zi) where each group is internally sorted by frequency.
+    If no group, return a single pseudo-group.
+    """
+    if e.group is None:
+        # Sort by frequency globally (prevents weird connecting when rows are unsorted)
+        idx = np.argsort(e.f)
+        return [("all", e.f[idx], e.zr[idx], e.zi[idx])]
+
+    groups: Dict[str, List[int]] = {}
+    for k, gv in enumerate(e.group):
+        label = str(gv)
+        groups.setdefault(label, []).append(k)
+
+    out = []
+    # Sort groups by numeric if possible
+    def _key(x: str):
+        try:
+            return float(x)
+        except Exception:
+            return x
+
+    for label in sorted(groups.keys(), key=_key):
+        idxs = np.array(groups[label], dtype=int)
+        f = e.f[idxs]
+        zr = e.zr[idxs]
+        zi = e.zi[idxs]
+        # Sort within group by frequency
+        order = np.argsort(f)
+        out.append((label, f[order], zr[order], zi[order]))
+
+    return out
+
+
+def plot_nyquist(e: EIS, out_png: str, invert_imag: bool = False) -> None:
+    """
+    Fix: plot each cycle/day as an independent polyline to avoid connecting across cycles.
+    """
+    plt.figure(figsize=(9, 6))
+
+    for label, f, zr, zi in _iter_groups(e):
+        x = zr
+        y = (-zi) if invert_imag else zi
+
+        # Each group draws its own line -> no cross-group straight lines
+        plt.plot(x, y, marker="o", linewidth=1, markersize=3, alpha=0.9)
+
     plt.xlabel("Real (Ohm or mOhm)")
-    plt.ylabel("Imag (Ohm or mOhm)" + (" (negated)" if invert_imag else ""))
-    plt.title(f"Nyquist - {t.sheet}")
+    plt.ylabel(("−Imag" if invert_imag else "Imag") + " (Ohm or mOhm)")
+    title = f"Nyquist - {e.sheet}"
+    if e.group_name is not None:
+        title += f" (grouped by {e.group_name})"
+    plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
 
-def plot_bode(t: EISTable, out_prefix: str) -> None:
-    f = t.f_hz
-    zr = t.z_real
-    zi = t.z_imag
 
-    mag = np.sqrt(zr * zr + zi * zi)
-    phase = np.degrees(np.arctan2(zi, zr))
+def plot_bode(e: EIS, out_prefix: str) -> None:
+    """
+    Fix: plot each cycle/day separately + sort by frequency within each cycle.
+    """
+    # Magnitude
+    plt.figure(figsize=(9, 6))
+    for label, f, zr, zi in _iter_groups(e):
+        mag = np.sqrt(zr * zr + zi * zi)
+        plt.semilogx(f, mag, marker="o", linewidth=1, markersize=3, alpha=0.9)
 
-    plt.figure()
-    plt.semilogx(f, mag, marker="o", linewidth=1)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("|Z| (Ohm or mOhm)")
-    plt.title(f"Bode Magnitude - {t.sheet}")
+    title = f"Bode Magnitude - {e.sheet}"
+    if e.group_name is not None:
+        title += f" (grouped by {e.group_name})"
+    plt.title(title)
     plt.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     plt.savefig(out_prefix + "_bode_mag.png", dpi=200)
     plt.close()
 
-    plt.figure()
-    plt.semilogx(f, phase, marker="o", linewidth=1)
+    # Phase
+    plt.figure(figsize=(9, 6))
+    for label, f, zr, zi in _iter_groups(e):
+        phase = np.degrees(np.arctan2(zi, zr))
+        plt.semilogx(f, phase, marker="o", linewidth=1, markersize=3, alpha=0.9)
+
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("Phase (deg)")
-    plt.title(f"Bode Phase - {t.sheet}")
+    title = f"Bode Phase - {e.sheet}"
+    if e.group_name is not None:
+        title += f" (grouped by {e.group_name})"
+    plt.title(title)
     plt.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     plt.savefig(out_prefix + "_bode_phase.png", dpi=200)
     plt.close()
 
 
-# -----------------------------
-# Measurement-by-cycle/day detection + plotting (generic)
-# -----------------------------
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xlsx", required=True, help="Path to UDC xlsx")
+    ap.add_argument("--out", required=True, help="Output directory")
+    ap.add_argument(
+        "--invert-imag",
+        action="store_true",
+        help="Plot Nyquist with -Imag on y-axis (common convention)."
+    )
+    args = ap.parse_args()
 
-def detect_measurement_sheet(df_raw: pd.DataFrame) -> bool:
-    # 只要能在前若干行看到这些关键词，就认为可能是 cycle/day 表
-    header_i = find_best_header_row(df_raw, ["cycle", "capacity", "dcir", "acir", "ocv", "soc", "day", "date"])
-    return header_i is not None
+    safe_mkdir(args.out)
 
-# def plot_measurement_by_cycle_day(df_raw: pd.DataFrame, sheet_name: str, out_dir: str) -> int:
-#     """
-#     非定制化的 measurement plot：
-#       - 找表头行
-#       - 找 X 轴（cycle 优先，其次 day/date）
-#       - 找常见指标（capacity/dcir/acir/ocv/soc）
-#       - 每个指标画一张 vs X
-#     """
-#     header_i = find_best_header_row(df_raw, ["cycle", "capacity", "dcir", "acir", "ocv", "soc", "day", "date"])
-#     if header_i is None:
-#         return 0
-
-#     header = df_raw.iloc[header_i].astype(str).map(norm_cell)
-#     df = df_raw.iloc[header_i + 1:].copy()
-#     df.columns = header
-
-#     # 选 x 轴
-#     x_col = None
-#     for c in df.columns:
-#         if "cycle" in c.lower():
-#             x_col = c
-#             break
-#     if x_col is None:
-#         for c in df.columns:
-#             if "day" in c.lower() or "date" in c.lower():
-#                 x_col = c
-#                 break
-#     if x_col is None:
-#         return 0
-
-#     x = pd.to_numeric(df[x_col], errors="coerce")
-#     if x.notna().sum() < 5:
-#         return 0
-
-#     metrics = []
-#     for key in ["capacity", "dcir", "acir", "ocv", "soc"]:
-#         for c in df.columns:
-#             if key in c.lower():
-#                 metrics.append(c)
-
-#     made = 0
-#     for m in metrics:
-#         y = pd.to_numeric(df[m], errors="coerce")
-#         ok = x.notna() & y.notna()
-#         if ok.sum() < 5:
-#             continue
-
-#         plt.figure()
-#         plt.plot(x[ok], y[ok], marker="o", linewidth=1)
-#         plt.xlabel(x_col)
-#         plt.ylabel(m)
-#         plt.title(f"{m} vs {x_col} - {sheet_name}")
-#         plt.grid(True, alpha=0.3)
-#         plt.tight_layout()
-
-#         out_png = os.path.join(out_dir, f"{sanitize_filename(sheet_name)}__{sanitize_filename(m)}_vs_{sanitize_filename(x_col)}.png")
-#         plt.savefig(out_png, dpi=200)
-#         plt.close()
-#         made += 1
-
-#     return made
-
-
-
-
-def make_unique_columns(cols):
-    """
-    把重复列名变成唯一：例如 Capacity, Capacity -> Capacity, Capacity__2
-    """
-    seen = {}
-    out = []
-    for c in cols:
-        c = str(c).strip()
-        if c == "" or c.lower() == "nan":
-            c = "Unnamed"
-        if c not in seen:
-            seen[c] = 1
-            out.append(c)
-        else:
-            seen[c] += 1
-            out.append(f"{c}__{seen[c]}")
-    return out
-
-
-def plot_measurement_by_cycle_day(df_raw: pd.DataFrame, sheet_name: str, out_dir: str) -> int:
-    header_i = find_best_header_row(df_raw, ["cycle", "capacity", "dcir", "acir", "ocv", "soc", "day", "date"])
-    if header_i is None:
-        return 0
-
-    header = df_raw.iloc[header_i].astype(str).map(norm_cell)
-    df = df_raw.iloc[header_i + 1:].copy()
-
-    # ✅ 关键修复：列名唯一化（避免 df["Capacity"] 返回 DataFrame）
-    df.columns = make_unique_columns(header.tolist())
-
-    # -------------------------
-    # 选 x 轴（cycle 优先，其次 day/date）
-    # -------------------------
-    x_col = None
-    for c in df.columns:
-        if "cycle" in c.lower():
-            x_col = c
-            break
-    if x_col is None:
-        for c in df.columns:
-            if "day" in c.lower() or "date" in c.lower():
-                x_col = c
-                break
-    if x_col is None:
-        return 0
-
-    x = pd.to_numeric(df[x_col], errors="coerce")
-    if x.notna().sum() < 5:
-        return 0
-
-    # -------------------------
-    # 找常见指标列（可能有多个 DUT 的同类列）
-    # -------------------------
-    metric_keys = ["capacity", "dcir", "acir", "ocv", "soc"]
-    metrics = []
-    for key in metric_keys:
-        for c in df.columns:
-            if key in c.lower():
-                metrics.append(c)
-
+    xl = pd.ExcelFile(args.xlsx, engine="openpyxl")
     made = 0
-    for m in metrics:
-        # ✅ 现在 df[m] 一定是 Series，因为列名已唯一
-        y = pd.to_numeric(df[m], errors="coerce")
-        ok = x.notna() & y.notna()
-        if ok.sum() < 5:
-            continue
-
-        plt.figure()
-        plt.plot(x[ok], y[ok], marker="o", linewidth=1)
-        plt.xlabel(x_col)
-        plt.ylabel(m)
-        plt.title(f"{m} vs {x_col} - {sheet_name}")
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        out_png = os.path.join(
-            out_dir,
-            f"{sanitize_filename(sheet_name)}__{sanitize_filename(m)}_vs_{sanitize_filename(x_col)}.png"
-        )
-        plt.savefig(out_png, dpi=200)
-        plt.close()
-        made += 1
-
-    return made
-
-
-
-
-
-
-# -----------------------------
-# Main
-# -----------------------------
-
-def process_file(xlsx_path: str, out_dir: str) -> None:
-    safe_mkdir(out_dir)
-
-    print(f"[INFO] Reading: {xlsx_path}")
-    xl = pd.ExcelFile(xlsx_path, engine="openpyxl")
-    print(f"[INFO] Sheets: {xl.sheet_names}")
-
-    total_plots = 0
-    detected_any_eis = False
-    detected_any_meas = False
 
     for sh in xl.sheet_names:
-        df_raw = pd.read_excel(xlsx_path, sheet_name=sh, header=None, engine="openpyxl")
+        df_raw = pd.read_excel(args.xlsx, sheet_name=sh, header=None, engine="openpyxl")
         if df_raw.empty:
             continue
 
-        # 1) 优先尝试 EIS
-        eis_tables = extract_eis_from_sheet(df_raw, sh)
-        if eis_tables:
-            detected_any_eis = True
-            for idx, t in enumerate(eis_tables):
-                prefix = os.path.join(out_dir, f"{sanitize_filename(sh)}__eis{idx}")
-                plot_nyquist(t, prefix + "_nyquist.png", invert_imag=False)
-                plot_bode(t, prefix)
-                total_plots += 3
+        eis = extract_eis(df_raw, sh)
+        if eis is None:
             continue
 
-        # 2) 再尝试 measurement by cycle/day
-        if detect_measurement_sheet(df_raw):
-            detected_any_meas = True
-            made = plot_measurement_by_cycle_day(df_raw, sh, out_dir)
-            total_plots += made
+        prefix = os.path.join(args.out, sanitize_filename(sh))
+        plot_nyquist(eis, prefix + "_nyquist.png", invert_imag=args.invert_imag)
+        plot_bode(eis, prefix)
+        made += 3
 
-    if total_plots == 0:
-        print("[WARN] No plots were generated.")
-        if detected_any_eis:
-            print("       EIS-like header detected but numeric rows were insufficient.")
-        elif detected_any_meas:
-            print("       Measurement-like header detected but could not find numeric Cycle/Day series.")
-        else:
-            print("       This xlsx likely does not contain EIS (frequency/real/imag) or cycle/day measurement tables.")
+    if made == 0:
+        print("[WARN] No EIS tables found (frequency/real/imag numeric block not detected).")
     else:
-        print(f"[INFO] Done. Generated {total_plots} plot(s) -> {out_dir}")
+        print(f"[INFO] Generated {made} plot(s) -> {args.out}")
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", required=True, help="Path to UDC xlsx file")
-    ap.add_argument("--out", required=True, help="Output directory for plots")
-    args = ap.parse_args()
-    process_file(args.xlsx, args.out)
 
 if __name__ == "__main__":
     main()
