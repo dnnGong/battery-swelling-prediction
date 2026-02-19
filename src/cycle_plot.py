@@ -430,8 +430,10 @@ def main():
     fail_cnt = 0
     for serial in serials:
         try:
-            print(f"[INFO] Processing serial={serial}")
-            run_for_one_serial(serial, args.out, df_cycle, df_cm, df_dcir)
+            serial_out = os.path.join(args.out, sanitize_filename(serial))
+            safe_mkdir(serial_out)
+            print(f"[INFO] Processing serial={serial} -> {serial_out}")
+            run_for_one_serial(serial, serial_out, df_cycle, df_cm, df_dcir)
             ok_cnt += 1
         except Exception as e:
             fail_cnt += 1
