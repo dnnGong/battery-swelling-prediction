@@ -30,6 +30,47 @@ def sanitize_filename(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
 
 
+def detect_serials(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[str]:
+    """
+    Detect serial numbers from the repeated-serial row in wide tables.
+    """
+    if df_raw is None or df_raw.empty or serial_row_idx >= len(df_raw):
+        return []
+
+    serials: List[str] = []
+    seen = set()
+    row = df_raw.iloc[serial_row_idx]
+
+    for v in row.tolist():
+        s = "" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v).strip()
+        if not s:
+            continue
+        s_low = s.lower()
+        if "serial" in s_low and "number" in s_low:
+            continue
+
+        tokens = re.findall(r"[A-Za-z0-9\-]{6,}", s)
+        for t in tokens:
+            has_alpha = any(c.isalpha() for c in t)
+            has_digit = any(c.isdigit() for c in t)
+            if not (has_alpha and has_digit):
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            serials.append(t)
+
+    return serials
+
+
+def detect_primary_serial(df_raw: pd.DataFrame) -> str:
+    for idx in (1, 0, 2):
+        serials = detect_serials(df_raw, serial_row_idx=idx)
+        if serials:
+            return serials[0]
+    return "unknown_serial"
+
+
 def find_best_header_row(df_raw: pd.DataFrame, keywords: List[str], scan_rows: int = 150) -> Optional[int]:
     best_i, best_score = None, 0
     n = min(len(df_raw), scan_rows)
@@ -272,7 +313,10 @@ def main():
         if eis is None:
             continue
 
-        prefix = os.path.join(args.out, sanitize_filename(sh))
+        serial = detect_primary_serial(df_raw)
+        serial_dir = os.path.join(args.out, sanitize_filename(serial))
+        safe_mkdir(serial_dir)
+        prefix = os.path.join(serial_dir, sanitize_filename(sh))
         plot_nyquist(eis, prefix + "_nyquist.png", invert_imag=args.invert_imag)
         plot_bode(eis, prefix)
         made += 3
@@ -280,7 +324,7 @@ def main():
     if made == 0:
         print("[WARN] No EIS tables found (frequency/real/imag numeric block not detected).")
     else:
-        print(f"[INFO] Generated {made} plot(s) -> {args.out}")
+        print(f"[INFO] Generated {made} plot(s) -> {args.out}/<serial>/")
 
 
 if __name__ == "__main__":

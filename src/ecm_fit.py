@@ -31,6 +31,7 @@ rye run python imped10_rescue.py \
 
 import argparse
 import os
+import re
 from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
@@ -57,6 +58,48 @@ def ensure_dir(p: str) -> None:
 
 def to_float_series(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
+
+def sanitize_filename(s: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
+
+def detect_serials(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[str]:
+    """
+    Detect serial numbers from the repeated-serial row in wide tables.
+    """
+    if df_raw is None or df_raw.empty or serial_row_idx >= len(df_raw):
+        return []
+
+    serials: List[str] = []
+    seen = set()
+    row = df_raw.iloc[serial_row_idx]
+
+    for v in row.tolist():
+        s = "" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v).strip()
+        if not s:
+            continue
+        s_low = s.lower()
+        if "serial" in s_low and "number" in s_low:
+            continue
+
+        tokens = re.findall(r"[A-Za-z0-9\-]{6,}", s)
+        for t in tokens:
+            has_alpha = any(c.isalpha() for c in t)
+            has_digit = any(c.isdigit() for c in t)
+            if not (has_alpha and has_digit):
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            serials.append(t)
+
+    return serials
+
+def detect_primary_serial(df_raw: pd.DataFrame) -> str:
+    for idx in (1, 0, 2):
+        serials = detect_serials(df_raw, serial_row_idx=idx)
+        if serials:
+            return serials[0]
+    return "unknown_serial"
 
 def parse_guess(guess_str: str) -> List[float]:
     parts = [x.strip() for x in guess_str.split(",") if x.strip()]
@@ -425,6 +468,11 @@ def main():
     args = ap.parse_args()
 
     ensure_dir(args.out_dir)
+    df_sheet = pd.read_excel(args.xlsx, sheet_name=args.sheet, header=None, engine="openpyxl")
+    serial = detect_primary_serial(df_sheet)
+    serial_out_dir = os.path.join(args.out_dir, sanitize_filename(serial))
+    ensure_dir(serial_out_dir)
+    print(f"[INFO] Auto-detected serial for sheet={args.sheet}: {serial}")
 
     freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
         xlsx_path=args.xlsx,
@@ -528,7 +576,7 @@ def main():
     Z_fit = model.predict(freq)
 
     out_png = os.path.join(
-        args.out_dir,
+        serial_out_dir,
         f"nyquist_fit__{str(args.sheet)}__block{chosen_block}.png"
     )
     title = f"Nyquist + Fit | sheet={args.sheet} | block={chosen_block}"
