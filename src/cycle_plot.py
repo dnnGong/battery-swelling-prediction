@@ -29,6 +29,40 @@ def to_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
+def detect_serials(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[str]:
+    """
+    Detect serial numbers from the repeated-serial row in wide tables.
+    """
+    if df_raw is None or df_raw.empty or serial_row_idx >= len(df_raw):
+        return []
+
+    serials: List[str] = []
+    seen = set()
+    row = df_raw.iloc[serial_row_idx]
+
+    for v in row.tolist():
+        s = "" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v).strip()
+        if not s:
+            continue
+        s_low = s.lower()
+        if "serial" in s_low and "number" in s_low:
+            continue
+
+        # Keep alnum/hyphen chunks that look like SNs, e.g. 2AM143681331
+        tokens = re.findall(r"[A-Za-z0-9\-]{6,}", s)
+        for t in tokens:
+            has_alpha = any(c.isalpha() for c in t)
+            has_digit = any(c.isdigit() for c in t)
+            if not (has_alpha and has_digit):
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            serials.append(t)
+
+    return serials
+
+
 def find_serial_block(df_raw: pd.DataFrame, serial: str, serial_row_idx: int = 1) -> Optional[Tuple[int, int]]:
     """
     Row serial_row_idx contains repeated serial numbers across a column block.
@@ -280,22 +314,13 @@ def save_by_soc(df: pd.DataFrame, ycol: str, title: str, xlabel: str, ylabel: st
     plt.close()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", required=True, help="Path to CL UDC xlsx (e.g., test1.xlsx)")
-    ap.add_argument("--serial", required=True, help="Serial number string (e.g., 2AM143681331)")
-    ap.add_argument("--out", required=True, help="Output directory")
-    args = ap.parse_args()
-
-    safe_mkdir(args.out)
-    serial = args.serial
-    xlsx = args.xlsx
-
-    # Load sheets
-    df_cycle = load_sheet(xlsx, "03-1_Cycle")
-    df_cm = load_sheet(xlsx, "03-1_CycleMeasure")
-    df_dcir = load_sheet(xlsx, "03-1_CycleDCIR")
-
+def run_for_one_serial(
+    serial: str,
+    out_dir: str,
+    df_cycle: pd.DataFrame,
+    df_cm: pd.DataFrame,
+    df_dcir: pd.DataFrame,
+) -> None:
     # 1) Discharge Capacity vs Cycle
     cyc = extract_from_cycle(df_cycle, serial)
     save_line(
@@ -303,7 +328,7 @@ def main():
         title=f"Discharge Capacity vs Cycle\nSerial {serial} | CL",
         xlabel="Cycle",
         ylabel="Discharge Capacity (mAh)",
-        out_png=os.path.join(args.out, f"CL_DischargeCapacity_vs_Cycle__{sanitize_filename(serial)}.png")
+        out_png=os.path.join(out_dir, f"CL_DischargeCapacity_vs_Cycle__{sanitize_filename(serial)}.png")
     )
 
     # 2/3/4) Thickness2 / OCV / ACIR vs Cycle (Cycle - Actual)
@@ -317,10 +342,10 @@ def main():
             title=f"Thickness 2 Measurement vs Cycle\nSerial {serial} | CL",
             xlabel="Cycle - Actual",
             ylabel="Thickness 2 Measurement (mm)",
-            out_png=os.path.join(args.out, f"CL_Thickness2_vs_Cycle__{sanitize_filename(serial)}.png")
+            out_png=os.path.join(out_dir, f"CL_Thickness2_vs_Cycle__{sanitize_filename(serial)}.png")
         )
     else:
-        print("[WARN] Thickness2 data not found or too sparse in 03-1_CycleMeasure for this serial.")
+        print(f"[WARN] Thickness2 data not found or too sparse in 03-1_CycleMeasure for serial={serial}.")
 
     # OCV vs Cycle (actual)
     if "ocv_v" in cm.columns and cm["ocv_v"].notna().sum() >= 2:
@@ -330,10 +355,10 @@ def main():
             title=f"OCV vs Cycle\nSerial {serial} | CL",
             xlabel="Cycle - Actual",
             ylabel="OCV (V)",
-            out_png=os.path.join(args.out, f"CL_OCV_vs_Cycle__{sanitize_filename(serial)}.png")
+            out_png=os.path.join(out_dir, f"CL_OCV_vs_Cycle__{sanitize_filename(serial)}.png")
         )
     else:
-        print("[WARN] OCV(V) data not found or too sparse in 03-1_CycleMeasure for this serial.")
+        print(f"[WARN] OCV(V) data not found or too sparse in 03-1_CycleMeasure for serial={serial}.")
 
     # ACIR vs Cycle (actual)
     if "acir_mohm" in cm.columns and cm["acir_mohm"].notna().sum() >= 2:
@@ -343,10 +368,10 @@ def main():
             title=f"ACIR vs Cycle\nSerial {serial} | CL",
             xlabel="Cycle - Actual",
             ylabel="ACIR (mOhm)",
-            out_png=os.path.join(args.out, f"CL_ACIR_vs_Cycle__{sanitize_filename(serial)}.png")
+            out_png=os.path.join(out_dir, f"CL_ACIR_vs_Cycle__{sanitize_filename(serial)}.png")
         )
     else:
-        print("[WARN] ACIR(mOhm) data not found or too sparse in 03-1_CycleMeasure for this serial.")
+        print(f"[WARN] ACIR(mOhm) data not found or too sparse in 03-1_CycleMeasure for serial={serial}.")
 
     # 5/6) DCIR & OCV vs Cycle (by SOC) from 03-1_CycleDCIR（✅宽表解析）
     dcir = extract_from_cycledcir(df_dcir, serial)
@@ -357,10 +382,10 @@ def main():
             title=f"DCIR vs Cycle (by SOC)\nSerial {serial} | CL",
             xlabel="Cycle - Target",
             ylabel="DCIR (mOhm)",
-            out_png=os.path.join(args.out, f"CL_DCIR_vs_Cycle_by_SOC__{sanitize_filename(serial)}.png")
+            out_png=os.path.join(out_dir, f"CL_DCIR_vs_Cycle_by_SOC__{sanitize_filename(serial)}.png")
         )
     else:
-        print("[WARN] DCIR data not found or too sparse in 03-1_CycleDCIR for this serial.")
+        print(f"[WARN] DCIR data not found or too sparse in 03-1_CycleDCIR for serial={serial}.")
 
     if "ocv_v" in dcir.columns and dcir["ocv_v"].notna().sum() >= 2:
         save_by_soc(
@@ -368,12 +393,51 @@ def main():
             title=f"OCV vs Cycle (by SOC)\nSerial {serial} | CL",
             xlabel="Cycle - Target",
             ylabel="OCV (V)",
-            out_png=os.path.join(args.out, f"CL_OCV_vs_Cycle_by_SOC__{sanitize_filename(serial)}.png")
+            out_png=os.path.join(out_dir, f"CL_OCV_vs_Cycle_by_SOC__{sanitize_filename(serial)}.png")
         )
     else:
-        print("[WARN] OCV data not found or too sparse in 03-1_CycleDCIR for this serial.")
+        print(f"[WARN] OCV data not found or too sparse in 03-1_CycleDCIR for serial={serial}.")
 
-    print(f"[INFO] Done. Output -> {args.out}")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xlsx", required=True, help="Path to CL UDC xlsx (e.g., test1.xlsx)")
+    ap.add_argument("--serial", required=False, help="Serial number string (e.g., 2AM143681331). If omitted, auto-detect and process all serials in file.")
+    ap.add_argument("--out", required=True, help="Output directory")
+    args = ap.parse_args()
+
+    safe_mkdir(args.out)
+    xlsx = args.xlsx
+
+    # Load sheets
+    df_cycle = load_sheet(xlsx, "03-1_Cycle")
+    df_cm = load_sheet(xlsx, "03-1_CycleMeasure")
+    df_dcir = load_sheet(xlsx, "03-1_CycleDCIR")
+
+    if args.serial:
+        serials = [args.serial]
+    else:
+        serials = detect_serials(df_cycle, serial_row_idx=1)
+        if not serials:
+            serials = detect_serials(df_cm, serial_row_idx=1)
+        if not serials:
+            serials = detect_serials(df_dcir, serial_row_idx=1)
+        if not serials:
+            raise ValueError("Cannot auto-detect serial numbers from workbook. Please pass --serial explicitly.")
+        print(f"[INFO] Auto-detected {len(serials)} serial(s): {', '.join(serials)}")
+
+    ok_cnt = 0
+    fail_cnt = 0
+    for serial in serials:
+        try:
+            print(f"[INFO] Processing serial={serial}")
+            run_for_one_serial(serial, args.out, df_cycle, df_cm, df_dcir)
+            ok_cnt += 1
+        except Exception as e:
+            fail_cnt += 1
+            print(f"[WARN] serial={serial} failed: {e}")
+
+    print(f"[INFO] Done. Output -> {args.out} | success={ok_cnt}, failed={fail_cnt}")
 
 
 if __name__ == "__main__":
