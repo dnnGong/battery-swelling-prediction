@@ -103,21 +103,24 @@ Fit EIS data to ECM model (default: no-Warburg 2-CPE):
 - default circuit: `R0-p(R1,CPE1)-p(R2,CPE2)`
 
 The script supports:
+- single-file mode and directory-batch mode
 - auto serial block traversal
 - fallback block selection by valid numeric points
 - multi-start fitting
 - frequency filtering / high-frequency point dropping
+- optional Warburg tail fitting (`W` / `Wo` / `Ws`)
 - fit quality export (`json` + residual `csv`)
 
 ### CLI
 
 ```bash
 python src/ecm_fit.py \
-  --xlsx <xlsx_path> \
+  [--xlsx <xlsx_path> | --xlsx_dir <xlsx_dir> [--recursive]] \
   [--sheet 02_PreEIS] \
   [--block 2] \
   [--serial <serial>] \
   [--circuit "R0-p(R1,CPE1)-p(R2,CPE2)"] \
+  [--warburg none|W|Wo|Ws] \
   [--guess ""] \
   [--fmin <hz>] [--fmax <hz>] \
   [--drop_first_n <n>] \
@@ -128,10 +131,16 @@ python src/ecm_fit.py \
 
 ### Common Parameters
 
+- `--xlsx` / `--xlsx_dir`: provide exactly one input mode
+- `--recursive`: recursively scan `--xlsx_dir` for `.xlsx`
 - `--sheet`: target sheet (default `02_PreEIS`)
 - `--block`: preferred block index; script can fallback to best block
 - `--serial`: only run one serial, otherwise run all detected serials
 - `--circuit`: ECM topology
+- `--warburg`: append Warburg element to the circuit tail
+  - `none`: no Warburg
+  - `W`: semi-infinite Warburg
+  - `Wo` / `Ws`: finite-length Warburg variants
 - `--guess`: initial guess. Use empty string to trigger auto guess (`--guess ""`)
 - `--auto_sign` / `--no_auto_sign`: imag sign policy
 - `--fmin`, `--fmax`: frequency range filter
@@ -155,12 +164,42 @@ python src/ecm_fit.py \
   --out_dir "./data/test_ecm"
 ```
 
+### Recommended Example (with Warburg tail)
+
+```bash
+python src/ecm_fit.py \
+  --xlsx "/path/to/test1.xlsx" \
+  --sheet "02_PreEIS" \
+  --block 2 \
+  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)" \
+  --warburg W \
+  --guess "" \
+  --fmin 0.1 \
+  --drop_first_n 1 \
+  --n_starts 8 \
+  --weight_by_modulus \
+  --out_dir "./data/test_ecm_w"
+```
+
+### Directory Batch Example
+
+```bash
+python src/ecm_fit.py \
+  --xlsx_dir "./dataset" \
+  --recursive \
+  --sheet "02_PreEIS" \
+  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)" \
+  --warburg W \
+  --guess "" \
+  --out_dir "./data/test_ecm_all"
+```
+
 ### Output
 
 ```text
-data/test_ecm/<serial>/nyquist_fit__<sheet>__block<k>.png
-data/test_ecm/<serial>/fit_metrics__<sheet>__block<k>.json
-data/test_ecm/<serial>/fit_residuals__<sheet>__block<k>.csv
+data/test_ecm/<xlsx_stem>/<serial>/nyquist_fit__<sheet>__block<k>.png
+data/test_ecm/<xlsx_stem>/<serial>/fit_metrics__<sheet>__block<k>.json
+data/test_ecm/<xlsx_stem>/<serial>/fit_residuals__<sheet>__block<k>.csv
 ```
 
 ## How to Read ECM Fit Outputs
