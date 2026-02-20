@@ -176,12 +176,41 @@ def auto_guess_from_circuit(circuit: str, freq: np.ndarray, zre: np.ndarray) -> 
         a2 = 0.85
         q1 = 1.0 / (max(r1, 1e-12) * (2.0 * np.pi * f1) ** a1)
         q2 = 1.0 / (max(r2, 1e-12) * (2.0 * np.pi * f2) ** a2)
-        return [r0, r1, q1, a1, r2, q2, a2]
+        base = [r0, r1, q1, a1, r2, q2, a2]
+        # Semi-infinite Warburg: 1 parameter.
+        if "-w" in c and "-wo" not in c and "-ws" not in c:
+            base += [0.01]
+        # Finite-length Warburg (open/short): usually 2 parameters.
+        if "-wo" in c or "-ws" in c:
+            base += [0.01, 1.0]
+        return base
 
     # Default to 2-RC.
     c1 = 1.0 / (2.0 * np.pi * max(r1, 1e-12) * f1)
     c2 = 1.0 / (2.0 * np.pi * max(r2, 1e-12) * f2)
-    return [r0, r1, c1, r2, c2]
+    base = [r0, r1, c1, r2, c2]
+    if "-w" in c and "-wo" not in c and "-ws" not in c:
+        base += [0.01]
+    if "-wo" in c or "-ws" in c:
+        base += [0.01, 1.0]
+    return base
+
+
+def apply_warburg_to_circuit(base_circuit: str, warburg: str) -> str:
+    """
+    Append Warburg element at the tail of the circuit string.
+    warburg: none | W | Wo | Ws
+    """
+    w = (warburg or "none").strip().lower()
+    if w == "none":
+        return base_circuit
+    if w == "w":
+        return f"{base_circuit}-W1"
+    if w == "wo":
+        return f"{base_circuit}-Wo1"
+    if w == "ws":
+        return f"{base_circuit}-Ws1"
+    raise ValueError(f"Unsupported warburg mode: {warburg}")
 
 def _scaled_guess(base: List[float], scale_r: float, scale_cq: float) -> List[float]:
     g = list(base)
@@ -638,6 +667,7 @@ def main():
 
     # no-Warburg default: 2-CPE often fits battery arcs better than ideal 2-RC
     ap.add_argument("--circuit", default="R0-p(R1,CPE1)-p(R2,CPE2)")
+    ap.add_argument("--warburg", default="none", choices=["none", "W", "Wo", "Ws"], help="Append a Warburg element to circuit tail.")
     ap.add_argument("--guess", default="", help="Comma-separated initial guess. Empty -> auto guess from data.")
 
     ap.add_argument("--out_dir", default="./out_fit")
@@ -738,7 +768,10 @@ def main():
                 sign_mode = "imag=-raw (forced)"
 
             # 5) build initial guess
-            circuit = args.circuit or "R0-p(R1,C1)-p(R2,C2)"
+            circuit = apply_warburg_to_circuit(
+                args.circuit or "R0-p(R1,C1)-p(R2,C2)",
+                args.warburg,
+            )
             if args.guess.strip():
                 guess = parse_guess(args.guess)
             else:
@@ -759,7 +792,7 @@ def main():
 
             print("=== Fit result ===")
             print("Serial:", serial)
-            print("Circuit:", args.circuit)
+            print("Circuit:", circuit)
             print("Params:", params)
             print("RMSE(|Z| complex):", rmse)
             print("Used init guess:", used_guess)
