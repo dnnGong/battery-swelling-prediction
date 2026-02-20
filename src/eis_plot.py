@@ -63,6 +63,54 @@ def detect_serials(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[str]:
     return serials
 
 
+def extract_serial_token(x) -> str:
+    s = "" if x is None or (isinstance(x, float) and np.isnan(x)) else str(x).strip()
+    if not s:
+        return ""
+    s_low = s.lower()
+    if "serial" in s_low and "number" in s_low:
+        return ""
+    tokens = re.findall(r"[A-Za-z0-9\-]{6,}", s)
+    for t in tokens:
+        has_alpha = any(c.isalpha() for c in t)
+        has_digit = any(c.isdigit() for c in t)
+        if has_alpha and has_digit:
+            return t
+    return ""
+
+
+def detect_serial_blocks(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[Tuple[str, int, int]]:
+    """
+    Detect contiguous column blocks for each serial from the serial row.
+    Returns: [(serial, start_col, end_col_exclusive), ...]
+    """
+    if df_raw is None or df_raw.empty or serial_row_idx >= len(df_raw):
+        return []
+
+    row = df_raw.iloc[serial_row_idx].tolist()
+    ncol = len(row)
+    out: List[Tuple[str, int, int]] = []
+
+    j = 0
+    while j < ncol:
+        token = extract_serial_token(row[j])
+        if not token:
+            j += 1
+            continue
+        start = j
+        end = j + 1
+        while end < ncol:
+            t = extract_serial_token(row[end])
+            if (not t) or (t == token):
+                end += 1
+            else:
+                break
+        out.append((token, start, end))
+        j = end
+
+    return out
+
+
 def detect_primary_serial(df_raw: pd.DataFrame) -> str:
     for idx in (1, 0, 2):
         serials = detect_serials(df_raw, serial_row_idx=idx)
@@ -122,18 +170,27 @@ class EIS:
     group_name: Optional[str] = None        # column name for grouping, optional
 
 
-def extract_eis(df_raw: pd.DataFrame, sheet_name: str) -> Optional[EIS]:
+def extract_eis(df_raw: pd.DataFrame, sheet_name: str, col_range: Optional[Tuple[int, int]] = None) -> Optional[EIS]:
     """
     Extract ONE EIS block from a sheet:
     - Finds a header row containing frequency/real/imag keywords
     - Picks frequency, real, imag columns
     - Optionally picks a cycle/day grouping column if present
     """
-    header_i = find_best_header_row(df_raw, ["frequency", "real", "imag"])
+    df_view = df_raw
+    if col_range is not None:
+        c0, c1 = col_range
+        if c0 >= c1:
+            return None
+        df_view = df_raw.iloc[:, c0:c1].copy()
+        if df_view.shape[1] < 3:
+            return None
+
+    header_i = find_best_header_row(df_view, ["frequency", "real", "imag"])
     if header_i is None:
         return None
 
-    header = df_raw.iloc[header_i]
+    header = df_view.iloc[header_i]
 
     # Required cols
     j_f = pick_col_idx(header, ["frequency"])
@@ -150,7 +207,7 @@ def extract_eis(df_raw: pd.DataFrame, sheet_name: str) -> Optional[EIS]:
         ["measurement day or cycle", "cycle/day", "cycle", "day", "measurement day", "measurement cycle"]
     )
 
-    df = df_raw.iloc[header_i + 1:].copy()
+    df = df_view.iloc[header_i + 1:].copy()
 
     f = to_float_series(df.iloc[:, j_f])
     zr = to_float_series(df.iloc[:, j_r])
@@ -292,6 +349,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--xlsx", required=True, help="Path to UDC xlsx")
     ap.add_argument("--out", required=True, help="Output directory")
+    ap.add_argument("--serial", required=False, help="Only process this serial. If omitted, process all detected serials.")
     ap.add_argument(
         "--invert-imag",
         action="store_true",
@@ -309,17 +367,39 @@ def main():
         if df_raw.empty:
             continue
 
-        eis = extract_eis(df_raw, sh)
-        if eis is None:
-            continue
+        serial_blocks = detect_serial_blocks(df_raw, serial_row_idx=1)
+        if not serial_blocks:
+            serial_blocks = detect_serial_blocks(df_raw, serial_row_idx=0)
+        if not serial_blocks:
+            serial_blocks = detect_serial_blocks(df_raw, serial_row_idx=2)
 
-        serial = detect_primary_serial(df_raw)
-        serial_dir = os.path.join(args.out, sanitize_filename(serial))
-        safe_mkdir(serial_dir)
-        prefix = os.path.join(serial_dir, sanitize_filename(sh))
-        plot_nyquist(eis, prefix + "_nyquist.png", invert_imag=args.invert_imag)
-        plot_bode(eis, prefix)
-        made += 3
+        if serial_blocks:
+            for k, (serial, c0, c1) in enumerate(serial_blocks):
+                if args.serial and serial != args.serial:
+                    continue
+                eis = extract_eis(df_raw, sh, col_range=(c0, c1))
+                if eis is None:
+                    continue
+                serial_dir = os.path.join(args.out, sanitize_filename(serial))
+                safe_mkdir(serial_dir)
+                prefix = os.path.join(serial_dir, f"{sanitize_filename(sh)}__blk{k}")
+                plot_nyquist(eis, prefix + "_nyquist.png", invert_imag=args.invert_imag)
+                plot_bode(eis, prefix)
+                made += 3
+        else:
+            # Fallback for sheets without serial row.
+            eis = extract_eis(df_raw, sh)
+            if eis is None:
+                continue
+            serial = "unknown_serial"
+            if args.serial and args.serial != serial:
+                continue
+            serial_dir = os.path.join(args.out, sanitize_filename(serial))
+            safe_mkdir(serial_dir)
+            prefix = os.path.join(serial_dir, sanitize_filename(sh))
+            plot_nyquist(eis, prefix + "_nyquist.png", invert_imag=args.invert_imag)
+            plot_bode(eis, prefix)
+            made += 3
 
     if made == 0:
         print("[WARN] No EIS tables found (frequency/real/imag numeric block not detected).")

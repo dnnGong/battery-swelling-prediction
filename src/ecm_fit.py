@@ -101,6 +101,52 @@ def detect_primary_serial(df_raw: pd.DataFrame) -> str:
             return serials[0]
     return "unknown_serial"
 
+def extract_serial_token(x) -> str:
+    s = "" if x is None or (isinstance(x, float) and np.isnan(x)) else str(x).strip()
+    if not s:
+        return ""
+    s_low = s.lower()
+    if "serial" in s_low and "number" in s_low:
+        return ""
+    tokens = re.findall(r"[A-Za-z0-9\-]{6,}", s)
+    for t in tokens:
+        has_alpha = any(c.isalpha() for c in t)
+        has_digit = any(c.isdigit() for c in t)
+        if has_alpha and has_digit:
+            return t
+    return ""
+
+def detect_serial_blocks(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[Tuple[str, int, int]]:
+    """
+    Detect contiguous column blocks for each serial from the serial row.
+    Returns: [(serial, start_col, end_col_exclusive), ...]
+    """
+    if df_raw is None or df_raw.empty or serial_row_idx >= len(df_raw):
+        return []
+
+    row = df_raw.iloc[serial_row_idx].tolist()
+    ncol = len(row)
+    out: List[Tuple[str, int, int]] = []
+
+    j = 0
+    while j < ncol:
+        token = extract_serial_token(row[j])
+        if not token:
+            j += 1
+            continue
+        start = j
+        end = j + 1
+        while end < ncol:
+            t = extract_serial_token(row[end])
+            if (not t) or (t == token):
+                end += 1
+            else:
+                break
+        out.append((token, start, end))
+        j = end
+
+    return out
+
 def parse_guess(guess_str: str) -> List[float]:
     parts = [x.strip() for x in guess_str.split(",") if x.strip()]
     return [float(x) for x in parts]
@@ -350,6 +396,7 @@ def load_eis_with_rescue_and_fallback(
     imag_is_negative: bool,
     min_points: int,
     assume_mohm: bool,
+    serial_col_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, Tuple[int,int,int], int]:
     df_raw = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, engine="openpyxl")
     if df_raw.empty:
@@ -384,6 +431,10 @@ def load_eis_with_rescue_and_fallback(
         if j_f is None:
             print(f"[DEBUG] block={b}: no freq col found in this block.")
             return
+        if serial_col_range is not None:
+            c0, c1 = serial_col_range
+            if not (c0 <= j_f < c1):
+                return
 
         # Rescue choose real/imag within this block
         j_r, j_i, rescue_dbg = choose_real_imag_cols_by_rescue(
@@ -464,125 +515,125 @@ def main():
     ap.add_argument("--guess", default="0.02,0.05,1e-3,0.03,1e-2")
 
     ap.add_argument("--out_dir", default="./out_fit")
+    ap.add_argument("--serial", required=False, help="Only process this serial. If omitted, process all detected serials.")
     ap.add_argument("--min_points", type=int, default=5)
     args = ap.parse_args()
 
     ensure_dir(args.out_dir)
     df_sheet = pd.read_excel(args.xlsx, sheet_name=args.sheet, header=None, engine="openpyxl")
-    serial = detect_primary_serial(df_sheet)
-    serial_out_dir = os.path.join(args.out_dir, sanitize_filename(serial))
-    ensure_dir(serial_out_dir)
-    print(f"[INFO] Auto-detected serial for sheet={args.sheet}: {serial}")
+    serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=1)
+    if not serial_blocks:
+        serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=0)
+    if not serial_blocks:
+        serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=2)
+    if not serial_blocks:
+        serial_blocks = [(detect_primary_serial(df_sheet), 0, df_sheet.shape[1])]
 
-    freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
-        xlsx_path=args.xlsx,
-        sheet_name=args.sheet,
-        requested_block=args.block,
-        header_row=args.header,
-        imag_is_negative=args.imag_is_negative,
-        min_points=args.min_points,
-        assume_mohm=args.assume_mohm,
-    )
+    if args.serial:
+        serial_blocks = [x for x in serial_blocks if x[0] == args.serial]
+        if not serial_blocks:
+            raise ValueError(f"Requested serial not found in sheet: {args.serial}")
 
-    j_f, j_r, j_i = cols
-    print(f"\n[INFO] Header row used = {hdr}")
-    print(f"[INFO] chosen_block = {chosen_block} (requested={args.block})")
-    print(f"[INFO] Using RAW column indices: freq={j_f} | real={j_r} | imag={j_i}")
-    print(f"[INFO] Valid rows N = {len(freq)}")
-    print("[INFO] freq[:5] =", freq[:5])
-    print("[INFO] zre[:5]  =", zre[:5])
-    print("[INFO] zim[:5]  =", zim[:5])
+    print(f"[INFO] Detected {len(serial_blocks)} serial block(s) in sheet={args.sheet}")
 
-    # -------------- 一阶RC --------------
-    # # Fit ECM
-    # zim = -zim
-    # Z = zre + 1j * zim
-    # guess = parse_guess(args.guess)
-    # model = CustomCircuit(args.circuit, initial_guess=guess)
+    ok_cnt = 0
+    fail_cnt = 0
+    for serial, c0, c1 in serial_blocks:
+        try:
+            serial_out_dir = os.path.join(args.out_dir, sanitize_filename(serial))
+            ensure_dir(serial_out_dir)
+            print(f"\n[INFO] Processing serial={serial} cols=[{c0},{c1})")
 
-    # model.fit(freq, Z)
-    # params = model.parameters_
-    # -------------- 一阶RC --------------
+            freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
+                xlsx_path=args.xlsx,
+                sheet_name=args.sheet,
+                requested_block=args.block,
+                header_row=args.header,
+                imag_is_negative=args.imag_is_negative,
+                min_points=args.min_points,
+                assume_mohm=args.assume_mohm,
+                serial_col_range=(c0, c1),
+            )
 
+            j_f, j_r, j_i = cols
+            print(f"[INFO] Header row used = {hdr}")
+            print(f"[INFO] chosen_block = {chosen_block} (requested={args.block})")
+            print(f"[INFO] Using RAW column indices: freq={j_f} | real={j_r} | imag={j_i}")
+            print(f"[INFO] Valid rows N = {len(freq)}")
+            print("[INFO] freq[:5] =", freq[:5])
+            print("[INFO] zre[:5]  =", zre[:5])
+            print("[INFO] zim[:5]  =", zim[:5])
 
+            # 1) sort by frequency (important)
+            order = np.argsort(freq)
+            freq = freq[order]
+            zre = zre[order]
+            zim = zim[order]
 
+            # 2) Nyquist convention:
+            #    if your data zim is Im(Z), Nyquist uses -Im(Z).
+            #    Here we build Z with Im(Z) = (-zim) so that plotting -Im(Z) is consistent.
+            zim_for_Z = -zim
+            Z = zre + 1j * zim_for_Z
 
-    # -------------- 二阶RC --------------
-    # -----------------------------
-    # Fit ECM (2-RC) with better guesses
-    # -----------------------------
+            # 3) auto initial guess for 2-RC
+            #    R0 ~ high-frequency intercept ~ min(Re)
+            R0_0 = float(np.nanmin(zre))
 
-    # 1) sort by frequency (important)
-    order = np.argsort(freq)
-    freq = freq[order]
-    zre = zre[order]
-    zim = zim[order]
+            # total span in Re
+            dR = float(np.nanmax(zre) - np.nanmin(zre))
+            if not np.isfinite(dR) or dR <= 0:
+                dR = max(1e-12, abs(R0_0) * 0.5)
 
-    # 2) Nyquist convention:
-    #    if your data zim is Im(Z), Nyquist uses -Im(Z).
-    #    Here we build Z with Im(Z) = (-zim) so that plotting -Im(Z) is consistent.
-    zim_for_Z = -zim
-    Z = zre + 1j * zim_for_Z
+            # split the polarization resistance into two arcs
+            R1_0 = 0.6 * dR
+            R2_0 = 0.4 * dR
 
-    # 3) auto initial guess for 2-RC
-    #    R0 ~ high-frequency intercept ~ min(Re)
-    R0_0 = float(np.nanmin(zre))
+            # pick characteristic frequencies (rough): use quartiles
+            f1 = float(np.nanpercentile(freq, 70))  # higher freq -> smaller tau
+            f2 = float(np.nanpercentile(freq, 30))  # lower freq  -> larger tau
+            f1 = max(f1, 1e-6)
+            f2 = max(f2, 1e-6)
 
-    # total span in Re
-    dR = float(np.nanmax(zre) - np.nanmin(zre))
-    if not np.isfinite(dR) or dR <= 0:
-        dR = max(1e-12, abs(R0_0) * 0.5)
+            # C ≈ 1/(2π R f_peak)
+            C1_0 = 1.0 / (2.0 * np.pi * max(R1_0, 1e-12) * f1)
+            C2_0 = 1.0 / (2.0 * np.pi * max(R2_0, 1e-12) * f2)
 
-    # split the polarization resistance into two arcs
-    R1_0 = 0.6 * dR
-    R2_0 = 0.4 * dR
+            # If user provides --guess explicitly, respect it; else use auto
+            if args.guess.strip():
+                guess = parse_guess(args.guess)
+            else:
+                guess = [R0_0, R1_0, C1_0, R2_0, C2_0]
 
-    # pick characteristic frequencies (rough): use quartiles
-    # (you can tune these; they're just to get C in the right ballpark)
-    f1 = float(np.nanpercentile(freq, 70))  # higher freq -> smaller tau
-    f2 = float(np.nanpercentile(freq, 30))  # lower freq  -> larger tau
-    f1 = max(f1, 1e-6)
-    f2 = max(f2, 1e-6)
+            # 4) enforce 2-RC circuit unless user overrides
+            circuit = args.circuit or "R0-p(R1,C1)-p(R2,C2)"
 
-    # C ≈ 1/(2π R f_peak)
-    C1_0 = 1.0 / (2.0 * np.pi * max(R1_0, 1e-12) * f1)
-    C2_0 = 1.0 / (2.0 * np.pi * max(R2_0, 1e-12) * f2)
+            print("[DEBUG] AutoGuess (2RC):", guess)
+            print("[DEBUG] Circuit:", circuit)
 
-    # If user provides --guess explicitly, respect it; else use auto
-    if args.guess.strip():
-        guess = parse_guess(args.guess)
-    else:
-        guess = [R0_0, R1_0, C1_0, R2_0, C2_0]
+            model = CustomCircuit(circuit, initial_guess=guess)
+            model.fit(freq, Z)
+            params = model.parameters_
 
-    # 4) enforce 2-RC circuit unless user overrides
-    circuit = args.circuit or "R0-p(R1,C1)-p(R2,C2)"
+            print("=== Fit result ===")
+            print("Serial:", serial)
+            print("Circuit:", args.circuit)
+            print("Params:", params)
 
-    print("[DEBUG] AutoGuess (2RC):", guess)
-    print("[DEBUG] Circuit:", circuit)
+            Z_fit = model.predict(freq)
+            out_png = os.path.join(
+                serial_out_dir,
+                f"nyquist_fit__{str(args.sheet)}__block{chosen_block}.png"
+            )
+            title = f"Nyquist + Fit | serial={serial} | sheet={args.sheet} | block={chosen_block}"
+            save_nyquist(Z, Z_fit, out_png, title)
+            print(f"[INFO] Saved plot -> {out_png}")
+            ok_cnt += 1
+        except Exception as e:
+            fail_cnt += 1
+            print(f"[WARN] serial={serial} failed: {e}")
 
-    model = CustomCircuit(circuit, initial_guess=guess)
-    model.fit(freq, Z)
-    params = model.parameters_
-    # -------------- 二阶RC --------------
-
-
-
-
-
-    print("\n=== Fit result ===")
-    print("Circuit:", args.circuit)
-    print("Params:", params)
-
-    Z_fit = model.predict(freq)
-
-    out_png = os.path.join(
-        serial_out_dir,
-        f"nyquist_fit__{str(args.sheet)}__block{chosen_block}.png"
-    )
-    title = f"Nyquist + Fit | sheet={args.sheet} | block={chosen_block}"
-    save_nyquist(Z, Z_fit, out_png, title)
-
-    print(f"\n[INFO] Saved plot -> {out_png}")
+    print(f"\n[INFO] Done. Output -> {args.out_dir} | success={ok_cnt}, failed={fail_cnt}")
 
 
 if __name__ == "__main__":
