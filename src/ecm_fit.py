@@ -32,6 +32,7 @@ rye run python imped10_rescue.py \
 import argparse
 import os
 import re
+import json
 from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
@@ -151,6 +152,92 @@ def parse_guess(guess_str: str) -> List[float]:
     parts = [x.strip() for x in guess_str.split(",") if x.strip()]
     return [float(x) for x in parts]
 
+def auto_guess_from_circuit(circuit: str, freq: np.ndarray, zre: np.ndarray) -> List[float]:
+    """
+    Build a reasonable initial guess from data scale.
+    Supports common 2-RC / 2-CPE circuits without Warburg.
+    """
+    c = circuit.lower()
+    r0 = float(np.nanmin(zre))
+    dR = float(np.nanmax(zre) - np.nanmin(zre))
+    if not np.isfinite(dR) or dR <= 0:
+        dR = max(1e-12, abs(r0) * 0.5)
+    r1 = 0.6 * dR
+    r2 = 0.4 * dR
+
+    f1 = float(np.nanpercentile(freq, 70))
+    f2 = float(np.nanpercentile(freq, 30))
+    f1 = max(f1, 1e-6)
+    f2 = max(f2, 1e-6)
+
+    # If circuit has CPE branches, use [R, Q, alpha] per branch.
+    if "cpe" in c:
+        a1 = 0.85
+        a2 = 0.85
+        q1 = 1.0 / (max(r1, 1e-12) * (2.0 * np.pi * f1) ** a1)
+        q2 = 1.0 / (max(r2, 1e-12) * (2.0 * np.pi * f2) ** a2)
+        return [r0, r1, q1, a1, r2, q2, a2]
+
+    # Default to 2-RC.
+    c1 = 1.0 / (2.0 * np.pi * max(r1, 1e-12) * f1)
+    c2 = 1.0 / (2.0 * np.pi * max(r2, 1e-12) * f2)
+    return [r0, r1, c1, r2, c2]
+
+def _scaled_guess(base: List[float], scale_r: float, scale_cq: float) -> List[float]:
+    g = list(base)
+    for i in range(len(g)):
+        # Keep CPE alpha (typically index 3 and 6 in 2-CPE) unchanged and clipped.
+        if i in (3, 6) and 0.0 < g[i] < 2.0:
+            g[i] = min(0.99, max(0.5, g[i]))
+            continue
+        # Heuristic: tiny numbers are usually C/Q terms.
+        if abs(g[i]) < 1e-1:
+            g[i] = g[i] * scale_cq
+        else:
+            g[i] = g[i] * scale_r
+    return g
+
+def fit_with_restarts(
+    circuit: str,
+    base_guess: List[float],
+    freq: np.ndarray,
+    Z: np.ndarray,
+    n_starts: int,
+    weight_by_modulus: bool,
+) -> Tuple[Any, List[float], float, List[float]]:
+    """
+    Multi-start fit and return the best model by complex RMSE.
+    """
+    candidates = [base_guess]
+    scales = [(0.5, 2.0), (2.0, 0.5), (0.8, 1.5), (1.5, 0.8), (1.0, 1.0)]
+    for sr, sc in scales[:max(0, n_starts - 1)]:
+        candidates.append(_scaled_guess(base_guess, sr, sc))
+
+    best_model = None
+    best_params = None
+    best_rmse = np.inf
+    best_guess = None
+    last_err = None
+
+    for g in candidates:
+        try:
+            m = CustomCircuit(circuit, initial_guess=g)
+            m.fit(freq, Z, weight_by_modulus=weight_by_modulus)
+            Zp = m.predict(freq)
+            rmse = float(np.sqrt(np.mean(np.abs(Z - Zp) ** 2)))
+            if rmse < best_rmse:
+                best_rmse = rmse
+                best_model = m
+                best_params = list(m.parameters_)
+                best_guess = g
+        except Exception as e:
+            last_err = e
+            continue
+
+    if best_model is None:
+        raise ValueError(f"All multi-start fits failed. Last error: {last_err}")
+    return best_model, best_params, best_rmse, best_guess
+
 def save_nyquist(Z, Z_fit, out_png: str, title: str) -> None:
     plt.figure()
     plt.plot(np.real(Z), -np.imag(Z), "o", label="Measured")
@@ -163,6 +250,45 @@ def save_nyquist(Z, Z_fit, out_png: str, title: str) -> None:
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
+
+def compute_fit_metrics(Z: np.ndarray, Z_fit: np.ndarray) -> Dict[str, float]:
+    """
+    Compute residual-based metrics on complex impedance.
+    """
+    r_re = np.real(Z) - np.real(Z_fit)
+    r_im = np.imag(Z) - np.imag(Z_fit)
+    r_abs = np.abs(Z - Z_fit)
+    z_abs = np.abs(Z)
+
+    rmse_complex = float(np.sqrt(np.mean(r_abs ** 2)))
+    mae_complex = float(np.mean(r_abs))
+    rmse_real = float(np.sqrt(np.mean(r_re ** 2)))
+    rmse_imag = float(np.sqrt(np.mean(r_im ** 2)))
+
+    denom = float(np.mean(z_abs))
+    nrmse_pct = float(100.0 * rmse_complex / denom) if denom > 0 else float("nan")
+
+    # R^2 on real/imag components separately
+    def _r2(y: np.ndarray, yp: np.ndarray) -> float:
+        ss_res = float(np.sum((y - yp) ** 2))
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+        if ss_tot <= 0:
+            return float("nan")
+        return 1.0 - ss_res / ss_tot
+
+    r2_real = _r2(np.real(Z), np.real(Z_fit))
+    r2_imag = _r2(np.imag(Z), np.imag(Z_fit))
+
+    return {
+        "n_points": int(len(Z)),
+        "rmse_complex_ohm": rmse_complex,
+        "mae_complex_ohm": mae_complex,
+        "nrmse_complex_percent_of_mean_absZ": nrmse_pct,
+        "rmse_real_ohm": rmse_real,
+        "rmse_imag_ohm": rmse_imag,
+        "r2_real": float(r2_real),
+        "r2_imag": float(r2_imag),
+    }
 
 def find_best_header_row(df_raw: pd.DataFrame, keywords: List[str], scan_rows: int = 120) -> Optional[int]:
     best_i, best_score = None, 0
@@ -505,18 +631,23 @@ def main():
     ap.add_argument("--block", type=int, default=2)
     ap.add_argument("--header", type=int, default=None)
     ap.add_argument("--imag_is_negative", action="store_true")
+    ap.add_argument("--auto_sign", dest="auto_sign", action="store_true", help="Auto-detect imag sign for Nyquist consistency.")
+    ap.add_argument("--no_auto_sign", dest="auto_sign", action="store_false", help="Disable auto sign detection.")
+    ap.set_defaults(auto_sign=True)
     ap.add_argument("--assume_mohm", action="store_true", help="Assume Real/Imag numeric are in mOhm and convert to Ohm (x1e-3).")
 
-    # - 一阶RC
-    # ap.add_argument("--circuit", default="R0-p(R1,C1)")
-    # ap.add_argument("--guess", default="0.02,0.05,1e-3")
-    # - 二阶RC
-    ap.add_argument("--circuit", default="R0-p(R1,C1)-p(R2,C2)")
-    ap.add_argument("--guess", default="0.02,0.05,1e-3,0.03,1e-2")
+    # no-Warburg default: 2-CPE often fits battery arcs better than ideal 2-RC
+    ap.add_argument("--circuit", default="R0-p(R1,CPE1)-p(R2,CPE2)")
+    ap.add_argument("--guess", default="", help="Comma-separated initial guess. Empty -> auto guess from data.")
 
     ap.add_argument("--out_dir", default="./out_fit")
     ap.add_argument("--serial", required=False, help="Only process this serial. If omitted, process all detected serials.")
     ap.add_argument("--min_points", type=int, default=5)
+    ap.add_argument("--drop_first_n", type=int, default=0, help="Drop N highest-frequency points before fitting.")
+    ap.add_argument("--fmin", type=float, default=None, help="Minimum frequency (Hz) to keep.")
+    ap.add_argument("--fmax", type=float, default=None, help="Maximum frequency (Hz) to keep.")
+    ap.add_argument("--n_starts", type=int, default=5, help="Number of multi-start attempts.")
+    ap.add_argument("--weight_by_modulus", action="store_true", help="Use modulus weighting in nonlinear fit.")
     args = ap.parse_args()
 
     ensure_dir(args.out_dir)
@@ -570,55 +701,68 @@ def main():
             zre = zre[order]
             zim = zim[order]
 
-            # 2) Nyquist convention:
-            #    if your data zim is Im(Z), Nyquist uses -Im(Z).
-            #    Here we build Z with Im(Z) = (-zim) so that plotting -Im(Z) is consistent.
-            zim_for_Z = -zim
-            Z = zre + 1j * zim_for_Z
+            # 2) optional frequency window filtering
+            if args.fmin is not None:
+                m = freq >= args.fmin
+                freq, zre, zim = freq[m], zre[m], zim[m]
+            if args.fmax is not None:
+                m = freq <= args.fmax
+                freq, zre, zim = freq[m], zre[m], zim[m]
+            if len(freq) < args.min_points:
+                raise ValueError(f"Too few points after fmin/fmax filtering: {len(freq)}")
 
-            # 3) auto initial guess for 2-RC
-            #    R0 ~ high-frequency intercept ~ min(Re)
-            R0_0 = float(np.nanmin(zre))
+            # 3) drop highest-frequency outliers if requested
+            if args.drop_first_n > 0:
+                od = np.argsort(-freq)  # high -> low
+                fd, rd, id_ = freq[od], zre[od], zim[od]
+                fd, rd, id_ = fd[args.drop_first_n:], rd[args.drop_first_n:], id_[args.drop_first_n:]
+                oa = np.argsort(fd)
+                freq, zre, zim = fd[oa], rd[oa], id_[oa]
+                if len(freq) < args.min_points:
+                    raise ValueError(f"Too few points after drop_first_n={args.drop_first_n}: {len(freq)}")
 
-            # total span in Re
-            dR = float(np.nanmax(zre) - np.nanmin(zre))
-            if not np.isfinite(dR) or dR <= 0:
-                dR = max(1e-12, abs(R0_0) * 0.5)
+            # 4) choose imag sign for Nyquist consistency
+            if args.auto_sign:
+                z1 = zre + 1j * zim
+                z2 = zre + 1j * (-zim)
+                neg1 = float(np.mean(np.imag(z1) < 0))
+                neg2 = float(np.mean(np.imag(z2) < 0))
+                if neg1 >= neg2:
+                    Z = z1
+                    sign_mode = "imag=raw"
+                else:
+                    Z = z2
+                    sign_mode = "imag=-raw"
+            else:
+                Z = zre + 1j * (-zim)
+                sign_mode = "imag=-raw (forced)"
 
-            # split the polarization resistance into two arcs
-            R1_0 = 0.6 * dR
-            R2_0 = 0.4 * dR
-
-            # pick characteristic frequencies (rough): use quartiles
-            f1 = float(np.nanpercentile(freq, 70))  # higher freq -> smaller tau
-            f2 = float(np.nanpercentile(freq, 30))  # lower freq  -> larger tau
-            f1 = max(f1, 1e-6)
-            f2 = max(f2, 1e-6)
-
-            # C ≈ 1/(2π R f_peak)
-            C1_0 = 1.0 / (2.0 * np.pi * max(R1_0, 1e-12) * f1)
-            C2_0 = 1.0 / (2.0 * np.pi * max(R2_0, 1e-12) * f2)
-
-            # If user provides --guess explicitly, respect it; else use auto
+            # 5) build initial guess
+            circuit = args.circuit or "R0-p(R1,C1)-p(R2,C2)"
             if args.guess.strip():
                 guess = parse_guess(args.guess)
             else:
-                guess = [R0_0, R1_0, C1_0, R2_0, C2_0]
+                guess = auto_guess_from_circuit(circuit, freq, zre)
 
-            # 4) enforce 2-RC circuit unless user overrides
-            circuit = args.circuit or "R0-p(R1,C1)-p(R2,C2)"
-
-            print("[DEBUG] AutoGuess (2RC):", guess)
+            print("[DEBUG] Sign mode:", sign_mode)
+            print("[DEBUG] Init guess:", guess)
             print("[DEBUG] Circuit:", circuit)
 
-            model = CustomCircuit(circuit, initial_guess=guess)
-            model.fit(freq, Z)
-            params = model.parameters_
+            model, params, rmse, used_guess = fit_with_restarts(
+                circuit=circuit,
+                base_guess=guess,
+                freq=freq,
+                Z=Z,
+                n_starts=max(1, args.n_starts),
+                weight_by_modulus=args.weight_by_modulus,
+            )
 
             print("=== Fit result ===")
             print("Serial:", serial)
             print("Circuit:", args.circuit)
             print("Params:", params)
+            print("RMSE(|Z| complex):", rmse)
+            print("Used init guess:", used_guess)
 
             Z_fit = model.predict(freq)
             out_png = os.path.join(
@@ -628,6 +772,34 @@ def main():
             title = f"Nyquist + Fit | serial={serial} | sheet={args.sheet} | block={chosen_block}"
             save_nyquist(Z, Z_fit, out_png, title)
             print(f"[INFO] Saved plot -> {out_png}")
+
+            metrics = compute_fit_metrics(Z, Z_fit)
+            print("[INFO] Fit metrics:", metrics)
+
+            metrics_path = os.path.join(
+                serial_out_dir,
+                f"fit_metrics__{str(args.sheet)}__block{chosen_block}.json"
+            )
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics, f, indent=2, ensure_ascii=True)
+            print(f"[INFO] Saved metrics -> {metrics_path}")
+
+            resid_df = pd.DataFrame({
+                "freq_hz": freq,
+                "z_real_meas_ohm": np.real(Z),
+                "z_imag_meas_ohm": np.imag(Z),
+                "z_real_fit_ohm": np.real(Z_fit),
+                "z_imag_fit_ohm": np.imag(Z_fit),
+                "resid_real_ohm": np.real(Z) - np.real(Z_fit),
+                "resid_imag_ohm": np.imag(Z) - np.imag(Z_fit),
+                "resid_abs_ohm": np.abs(Z - Z_fit),
+            })
+            resid_path = os.path.join(
+                serial_out_dir,
+                f"fit_residuals__{str(args.sheet)}__block{chosen_block}.csv"
+            )
+            resid_df.to_csv(resid_path, index=False)
+            print(f"[INFO] Saved residuals -> {resid_path}")
             ok_cnt += 1
         except Exception as e:
             fail_cnt += 1
