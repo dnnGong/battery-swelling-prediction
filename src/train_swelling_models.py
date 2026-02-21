@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import argparse
+import json
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+
+
+def safe_rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+
+
+def pick_anchor_rows_fixed_T(df: pd.DataFrame, T: int, max_input_cycle: int) -> pd.DataFrame:
+    """
+    Build one sample per cell, using latest row at cycle<=max_input_cycle as input,
+    and target from cycle<=T latest row.
+    """
+    out = []
+    for _, g in df.groupby("cell_key"):
+        g = g.sort_values("cycle_t")
+
+        anchor = g[g["cycle_t"] <= max_input_cycle]
+        if anchor.empty:
+            continue
+        anchor_row = anchor.iloc[-1].copy()
+
+        tgt = g[g["cycle_t"] <= T]
+        if tgt.empty:
+            continue
+        tgt_row = tgt.iloc[-1]
+
+        anchor_row["target_abs"] = float(tgt_row["y_abs_thickness_t"])
+        anchor_row["target_delta"] = float(tgt_row["y_delta_thickness_baseline_t"])
+        anchor_row["target_cycle"] = int(tgt_row["cycle_t"])
+        out.append(anchor_row)
+
+    if not out:
+        return pd.DataFrame()
+    return pd.DataFrame(out)
+
+
+def pick_rows_future_delta_TK(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
+    """
+    Use row at cycle t as input and future columns (t->t+K) as target.
+    """
+    sub = df[(df["cycle_t"] <= max_input_cycle) & (df["has_future_k"] == 1)].copy()
+    if sub.empty:
+        return sub
+    sub["target_abs"] = sub["y_future_abs_thickness_tk"].astype(float)
+    sub["target_delta"] = sub["y_future_delta_thickness_tk"].astype(float)
+    sub["target_cycle"] = (sub["cycle_t"] + sub["future_k"]).astype(int)
+    return sub
+
+
+def train_test_group_split(df: pd.DataFrame, test_size: float, seed: int) -> Tuple[np.ndarray, np.ndarray]:
+    try:
+        from sklearn.model_selection import GroupShuffleSplit
+    except Exception as e:
+        raise RuntimeError(
+            "scikit-learn is required. Please install it first: pip install scikit-learn"
+        ) from e
+
+    gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+    groups = df["cell_key"].to_numpy()
+    idx = np.arange(len(df))
+    tr, te = next(gss.split(idx, groups=groups))
+    return tr, te
+
+
+def build_models(seed: int) -> Dict[str, object]:
+    try:
+        from sklearn.linear_model import Ridge
+        from sklearn.ensemble import RandomForestRegressor
+    except Exception as e:
+        raise RuntimeError(
+            "scikit-learn is required. Please install it first: pip install scikit-learn"
+        ) from e
+
+    models: Dict[str, object] = {
+        "Ridge": Ridge(alpha=1.0, random_state=seed),
+        "RandomForest": RandomForestRegressor(
+            n_estimators=400,
+            max_depth=8,
+            min_samples_leaf=2,
+            random_state=seed,
+            n_jobs=-1,
+        ),
+    }
+    try:
+        from xgboost import XGBRegressor
+
+        models["XGBoost"] = XGBRegressor(
+            n_estimators=600,
+            max_depth=6,
+            learning_rate=0.03,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            reg_lambda=1.0,
+            random_state=seed,
+            n_jobs=4,
+            objective="reg:squarederror",
+        )
+    except Exception:
+        pass
+    return models
+
+
+def fit_eval_one_group(
+    df_group: pd.DataFrame,
+    feature_cols: List[str],
+    label_col: str,
+    seed: int,
+    test_size: float,
+    min_rows: int,
+    min_cells: int,
+) -> List[Dict]:
+    records: List[Dict] = []
+    sub = df_group.dropna(subset=[label_col, "cell_key"]).copy()
+    if len(sub) < min_rows or sub["cell_key"].nunique() < min_cells:
+        return records
+
+    # Drop feature columns that are entirely NaN in this group.
+    valid_cols = [c for c in feature_cols if sub[c].notna().sum() > 0]
+    if len(valid_cols) < 3:
+        return records
+
+    # Split first, then impute by train medians to avoid leakage.
+    tr_idx, te_idx = train_test_group_split(sub, test_size=test_size, seed=seed)
+    tr_df = sub.iloc[tr_idx].copy()
+    te_df = sub.iloc[te_idx].copy()
+
+    med = tr_df[valid_cols].median(numeric_only=True)
+    tr_df[valid_cols] = tr_df[valid_cols].fillna(med)
+    te_df[valid_cols] = te_df[valid_cols].fillna(med)
+
+    # Any still-NaN columns (e.g., all-NaN in train) -> fill 0.
+    tr_df[valid_cols] = tr_df[valid_cols].fillna(0.0)
+    te_df[valid_cols] = te_df[valid_cols].fillna(0.0)
+
+    X = sub[valid_cols].to_numpy(dtype=float)
+    y = sub[label_col].to_numpy(dtype=float)
+    X_tr = tr_df[valid_cols].to_numpy(dtype=float)
+    X_te = te_df[valid_cols].to_numpy(dtype=float)
+    y_tr = tr_df[label_col].to_numpy(dtype=float)
+    y_te = te_df[label_col].to_numpy(dtype=float)
+
+    models = build_models(seed)
+    for name, model in models.items():
+        model.fit(X_tr, y_tr)
+        pred = model.predict(X_te)
+        records.append(
+            {
+                "model": name,
+                "n_train": int(len(X_tr)),
+                "n_test": int(len(X_te)),
+                "n_cells_train": int(sub.iloc[tr_idx]["cell_key"].nunique()),
+                "n_cells_test": int(sub.iloc[te_idx]["cell_key"].nunique()),
+                "n_features_used": int(len(valid_cols)),
+                "rmse": safe_rmse(y_te, pred),
+                "mae": float(np.mean(np.abs(y_te - pred))),
+            }
+        )
+    return records
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--table_csv", required=True)
+    ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--target_mode", choices=["fixed_T", "future_delta_TK"], required=True)
+    ap.add_argument("--label_mode", choices=["absolute", "delta"], required=True)
+    ap.add_argument("--T", type=int, default=100, help="Target cycle for fixed_T mode.")
+    ap.add_argument("--max_input_cycle", type=int, default=50)
+    ap.add_argument("--future_k", type=int, default=20, help="Used for report tag; rows already include this column.")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--test_size", type=float, default=0.2)
+    ap.add_argument("--min_rows_per_group", type=int, default=6)
+    ap.add_argument("--min_cells_per_group", type=int, default=4)
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(args.table_csv)
+    if df.empty:
+        raise ValueError("Input table is empty.")
+
+    if args.target_mode == "fixed_T":
+        data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
+        mode_tag = f"fixedT_{args.T}"
+    else:
+        data = pick_rows_future_delta_TK(df, max_input_cycle=args.max_input_cycle)
+        mode_tag = f"futureK_{args.future_k}"
+
+    if data.empty:
+        raise ValueError("No training rows after target-mode filtering.")
+
+    label_col = "target_abs" if args.label_mode == "absolute" else "target_delta"
+
+    # Numeric feature columns only, prefixed by feat_.
+    feature_cols = [
+        c for c in data.columns
+        if c.startswith("feat_") and pd.api.types.is_numeric_dtype(data[c])
+    ]
+    if not feature_cols:
+        raise ValueError("No numeric feature columns found.")
+
+    summary_rows: List[Dict] = []
+    for group in ["CL", "FLC", "HYCL"]:
+        dg = data[data["group_tag"] == group].copy()
+        recs = fit_eval_one_group(
+            df_group=dg,
+            feature_cols=feature_cols,
+            label_col=label_col,
+            seed=args.seed,
+            test_size=args.test_size,
+            min_rows=args.min_rows_per_group,
+            min_cells=args.min_cells_per_group,
+        )
+        for r in recs:
+            r.update(
+                {
+                    "group_tag": group,
+                    "target_mode": args.target_mode,
+                    "label_mode": args.label_mode,
+                    "mode_tag": mode_tag,
+                    "max_input_cycle": int(args.max_input_cycle),
+                    "feature_count": int(len(feature_cols)),
+                }
+            )
+        summary_rows.extend(recs)
+
+    if not summary_rows:
+        raise ValueError("No valid group/model results. Check sample sizes per group.")
+
+    res = pd.DataFrame(summary_rows).sort_values(["group_tag", "rmse"]).reset_index(drop=True)
+
+    res_csv = out_dir / f"results__{args.target_mode}__{args.label_mode}__{mode_tag}.csv"
+    res.to_csv(res_csv, index=False)
+
+    run_meta = {
+        "table_csv": str(args.table_csv),
+        "target_mode": args.target_mode,
+        "label_mode": args.label_mode,
+        "T": int(args.T),
+        "future_k": int(args.future_k),
+        "max_input_cycle": int(args.max_input_cycle),
+        "seed": int(args.seed),
+        "test_size": float(args.test_size),
+        "feature_count": int(len(feature_cols)),
+        "feature_columns": feature_cols,
+    }
+    meta_json = out_dir / f"run_meta__{args.target_mode}__{args.label_mode}__{mode_tag}.json"
+    meta_json.write_text(json.dumps(run_meta, indent=2, ensure_ascii=True), encoding="utf-8")
+
+    print(f"[INFO] Saved results: {res_csv}")
+    print(f"[INFO] Saved run meta: {meta_json}")
+    print(res)
+
+
+if __name__ == "__main__":
+    main()

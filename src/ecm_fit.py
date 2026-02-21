@@ -988,6 +988,30 @@ def main():
                     json.dump(metrics, f, indent=2, ensure_ascii=True)
                 print(f"[INFO] Saved metrics -> {metrics_path}")
 
+                fit_result = {
+                    "file_name": str(xlsx_path.name),
+                    "group_tag": str(group_tag),
+                    "serial": str(serial),
+                    "sheet": str(sheet_used),
+                    "chosen_block": int(chosen_block),
+                    "raw_col_indices": {
+                        "freq": int(j_f),
+                        "real": int(j_r),
+                        "imag": int(j_i),
+                    },
+                    "circuit": str(circuit),
+                    "params": [float(x) for x in params],
+                    "rmse_complex_ohm": float(rmse),
+                    "used_init_guess": [float(x) for x in used_guess],
+                }
+                fit_result_path = os.path.join(
+                    serial_out_dir,
+                    f"fit_result__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
+                )
+                with open(fit_result_path, "w", encoding="utf-8") as f:
+                    json.dump(fit_result, f, indent=2, ensure_ascii=True)
+                print(f"[INFO] Saved fit result -> {fit_result_path}")
+
                 resid_df = pd.DataFrame({
                     "freq_hz": freq,
                     "z_real_meas_ohm": np.real(Z),

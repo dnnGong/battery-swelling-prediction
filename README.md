@@ -197,9 +197,10 @@ python src/ecm_fit.py \
 ### Output
 
 ```text
-data/test_ecm/<xlsx_stem>/<serial>/nyquist_fit__<sheet>__block<k>.png
-data/test_ecm/<xlsx_stem>/<serial>/fit_metrics__<sheet>__block<k>.json
-data/test_ecm/<xlsx_stem>/<serial>/fit_residuals__<sheet>__block<k>.csv
+data/test_ecm/<group>/<xlsx_stem>/<serial>/nyquist_fit__<sheet>__block<k>.png
+data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_metrics__<sheet>__block<k>.json
+data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_residuals__<sheet>__block<k>.csv
+data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_result__<sheet>__block<k>.json
 ```
 
 ## How to Read ECM Fit Outputs
@@ -221,3 +222,97 @@ data/test_ecm/<xlsx_stem>/<serial>/fit_residuals__<sheet>__block<k>.csv
   - larger `--n_starts` (e.g., `8` or `10`)
 - `eis_plot.py`/`ecm_fit.py` require EIS sheets with numeric frequency/real/imag data.
 - If your environment cannot import dependencies, activate your project venv first.
+
+## 4) ML Pipeline (ECM + Other Features)
+
+This project now includes two scripts for swelling prediction modeling:
+
+- `ml/build_feature_table.py`: build a unified training table from:
+  - ECM outputs (`fit_result`, `fit_metrics`)
+  - cycle/capacity/thickness/DCIR/ACIR/OCV data from raw xlsx
+- `ml/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
+  with `Ridge + RandomForest + XGBoost(if installed)`.
+
+### Extra Dependencies
+
+```bash
+pip install scikit-learn xgboost
+```
+
+### Step A: Build Unified Feature Table
+
+```bash
+python ml/build_feature_table.py \
+  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --ecm_dir "./data/test_ecm_all4" \
+  --out_csv "./data/ml/feature_table.csv" \
+  --min_cycle 5 \
+  --max_cycle 200 \
+  --future_k 20 \
+  --soc_target 50
+```
+
+Output: `./data/ml/feature_table.csv`
+
+### Step B: Train & Evaluate (Grouped by CL/FLC/HYCL)
+
+`target_mode` and `label_mode` are parameterized so you can compare:
+- absolute thickness vs delta thickness
+- fixed cycle T vs future T->T+K
+
+#### 1) Fixed cycle T, absolute thickness
+
+```bash
+python ml/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50
+```
+
+#### 2) Fixed cycle T, delta thickness
+
+```bash
+python ml/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode fixed_T \
+  --label_mode delta \
+  --T 100 \
+  --max_input_cycle 50
+```
+
+#### 3) Future T->T+K, absolute thickness at t+K
+
+```bash
+python ml/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode future_delta_TK \
+  --label_mode absolute \
+  --future_k 20 \
+  --max_input_cycle 50
+```
+
+#### 4) Future T->T+K, delta thickness (t+K minus t)
+
+```bash
+python ml/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode future_delta_TK \
+  --label_mode delta \
+  --future_k 20 \
+  --max_input_cycle 50
+```
+
+### ML Outputs
+
+```text
+data/ml/results/results__<target_mode>__<label_mode>__<mode_tag>.csv
+data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
+```
+
+Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
