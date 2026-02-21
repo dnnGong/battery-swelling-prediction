@@ -244,6 +244,46 @@ def collect_xlsx_files(
         raise ValueError(f"No .xlsx files found in directory: {xlsx_dir}")
     return files
 
+
+def resolve_sheet_name(xlsx_path: Path, requested_sheet: str) -> Optional[str]:
+    """
+    Resolve sheet name.
+    - If requested_sheet != 'auto': return as-is.
+    - If requested_sheet == 'auto': choose the best EIS-like sheet in this file.
+    """
+    if str(requested_sheet).lower() != "auto":
+        return requested_sheet
+
+    xl = pd.ExcelFile(str(xlsx_path), engine="openpyxl")
+    names = xl.sheet_names
+    if not names:
+        return None
+
+    # Priority by explicit known names first.
+    priority_exact = [
+        "02_PreEIS",
+        "03-4_EIS",
+        "02_EIS",
+        "PreEIS",
+        "EIS",
+    ]
+    name_set_lower = {n.lower(): n for n in names}
+    for p in priority_exact:
+        if p.lower() in name_set_lower:
+            return name_set_lower[p.lower()]
+
+    # Fallback: any sheet containing 'eis'
+    eis_like = [n for n in names if "eis" in n.lower()]
+    if eis_like:
+        return eis_like[0]
+
+    # Last fallback: any sheet containing 'impedance'
+    imp_like = [n for n in names if "impedance" in n.lower()]
+    if imp_like:
+        return imp_like[0]
+
+    return None
+
 def _scaled_guess(base: List[float], scale_r: float, scale_cq: float) -> List[float]:
     g = list(base)
     for i in range(len(g)):
@@ -311,6 +351,52 @@ def save_nyquist(Z, Z_fit, out_png: str, title: str) -> None:
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
+
+
+def save_serial_mosaic(
+    image_items: List[Tuple[str, str]],
+    out_png: str,
+    cols: int = 4,
+    title: Optional[str] = None,
+) -> None:
+    """
+    Merge serial-level fit images into one comparison mosaic.
+    image_items: list of (serial, image_path)
+    """
+    if not image_items:
+        return
+    cols = max(1, int(cols))
+    n = len(image_items)
+    rows = int(np.ceil(n / cols))
+
+    fig, axes = plt.subplots(rows, cols, figsize=(4.6 * cols, 3.6 * rows))
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    axes = axes.reshape(rows, cols)
+
+    k = 0
+    for r in range(rows):
+        for c in range(cols):
+            ax = axes[r, c]
+            if k >= n:
+                ax.axis("off")
+                continue
+            serial, img_path = image_items[k]
+            try:
+                img = plt.imread(img_path)
+                ax.imshow(img)
+                ax.set_title(f"Serial: {serial}", fontsize=10)
+                ax.axis("off")
+            except Exception as e:
+                ax.text(0.5, 0.5, f"Failed to load\n{serial}\n{e}", ha="center", va="center", fontsize=8)
+                ax.axis("off")
+            k += 1
+
+    if title:
+        fig.suptitle(title, fontsize=12)
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=200)
+    plt.close(fig)
 
 def compute_fit_metrics(Z: np.ndarray, Z_fit: np.ndarray) -> Dict[str, float]:
     """
@@ -712,6 +798,8 @@ def main():
     ap.add_argument("--fmax", type=float, default=None, help="Maximum frequency (Hz) to keep.")
     ap.add_argument("--n_starts", type=int, default=5, help="Number of multi-start attempts.")
     ap.add_argument("--weight_by_modulus", action="store_true", help="Use modulus weighting in nonlinear fit.")
+    ap.add_argument("--merge_serial_plots", action="store_true", help="Merge all serial fit plots per xlsx into one comparison image.")
+    ap.add_argument("--merge_cols", type=int, default=4, help="Column count in merged serial comparison image.")
     args = ap.parse_args()
 
     ensure_dir(args.out_dir)
@@ -724,7 +812,11 @@ def main():
     for xlsx_path in xlsx_files:
         try:
             print(f"\n[INFO] Processing file: {xlsx_path}")
-            df_sheet = pd.read_excel(xlsx_path, sheet_name=args.sheet, header=None, engine="openpyxl")
+            sheet_used = resolve_sheet_name(Path(xlsx_path), args.sheet)
+            if sheet_used is None:
+                raise ValueError("No EIS-like sheet found for --sheet auto.")
+            print(f"[INFO] Using sheet: {sheet_used}")
+            df_sheet = pd.read_excel(xlsx_path, sheet_name=sheet_used, header=None, engine="openpyxl")
             serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=1)
             if not serial_blocks:
                 serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=0)
@@ -738,7 +830,7 @@ def main():
                 if not serial_blocks:
                     raise ValueError(f"Requested serial not found in sheet: {args.serial}")
 
-            print(f"[INFO] Detected {len(serial_blocks)} serial block(s) in sheet={args.sheet}")
+            print(f"[INFO] Detected {len(serial_blocks)} serial block(s) in sheet={sheet_used}")
         except Exception as e:
             fail_cnt += 1
             print(f"[WARN] file={xlsx_path} failed during setup: {e}")
@@ -746,6 +838,7 @@ def main():
 
         file_out_dir = Path(args.out_dir) / sanitize_filename(xlsx_path.stem)
         ensure_dir(str(file_out_dir))
+        merged_items: List[Tuple[str, str]] = []
 
         for serial, c0, c1 in serial_blocks:
             try:
@@ -755,7 +848,7 @@ def main():
 
                 freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
                     xlsx_path=str(xlsx_path),
-                    sheet_name=args.sheet,
+                    sheet_name=sheet_used,
                     requested_block=args.block,
                     header_row=args.header,
                     imag_is_negative=args.imag_is_negative,
@@ -848,18 +941,19 @@ def main():
                 Z_fit = model.predict(freq)
                 out_png = os.path.join(
                     serial_out_dir,
-                    f"nyquist_fit__{str(args.sheet)}__block{chosen_block}.png"
+                    f"nyquist_fit__{sanitize_filename(str(sheet_used))}__block{chosen_block}.png"
                 )
-                title = f"Nyquist + Fit | file={xlsx_path.name} | serial={serial} | sheet={args.sheet} | block={chosen_block}"
+                title = f"Nyquist + Fit | file={xlsx_path.name} | serial={serial} | sheet={sheet_used} | block={chosen_block}"
                 save_nyquist(Z, Z_fit, out_png, title)
                 print(f"[INFO] Saved plot -> {out_png}")
+                merged_items.append((serial, out_png))
 
                 metrics = compute_fit_metrics(Z, Z_fit)
                 print("[INFO] Fit metrics:", metrics)
 
                 metrics_path = os.path.join(
                     serial_out_dir,
-                    f"fit_metrics__{str(args.sheet)}__block{chosen_block}.json"
+                    f"fit_metrics__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
                 )
                 with open(metrics_path, "w", encoding="utf-8") as f:
                     json.dump(metrics, f, indent=2, ensure_ascii=True)
@@ -877,7 +971,7 @@ def main():
                 })
                 resid_path = os.path.join(
                     serial_out_dir,
-                    f"fit_residuals__{str(args.sheet)}__block{chosen_block}.csv"
+                    f"fit_residuals__{sanitize_filename(str(sheet_used))}__block{chosen_block}.csv"
                 )
                 resid_df.to_csv(resid_path, index=False)
                 print(f"[INFO] Saved residuals -> {resid_path}")
@@ -885,6 +979,16 @@ def main():
             except Exception as e:
                 fail_cnt += 1
                 print(f"[WARN] file={xlsx_path.name} serial={serial} failed: {e}")
+
+        if args.merge_serial_plots and merged_items:
+            merge_png = file_out_dir / f"nyquist_fit_mosaic__{sanitize_filename(str(sheet_used))}.png"
+            save_serial_mosaic(
+                image_items=merged_items,
+                out_png=str(merge_png),
+                cols=args.merge_cols,
+                title=f"Nyquist Fit Comparison | file={xlsx_path.name} | sheet={sheet_used}",
+            )
+            print(f"[INFO] Saved merged serial plot -> {merge_png}")
 
     print(f"\n[INFO] Done. Output -> {args.out_dir} | success={ok_cnt}, failed={fail_cnt}")
 
