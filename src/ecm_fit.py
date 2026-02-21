@@ -245,6 +245,34 @@ def collect_xlsx_files(
     return files
 
 
+def infer_dataset_group(xlsx_path: Path, xlsx_dir: Optional[str]) -> str:
+    """
+    Infer dataset group label (e.g., CL/FLC/HYCL) from path.
+    """
+    known = {"cl": "CL", "flc": "FLC", "hycl": "HYCL"}
+
+    # Prefer nearest parent name matching known groups.
+    for p in xlsx_path.parents:
+        name = p.name.strip().lower()
+        if name in known:
+            return known[name]
+
+    # If no known group found, try the first level under xlsx_dir.
+    if xlsx_dir:
+        root = Path(xlsx_dir)
+        try:
+            rel = xlsx_path.relative_to(root)
+            if len(rel.parts) >= 2:
+                top = rel.parts[0].strip().lower()
+                if top in known:
+                    return known[top]
+                return sanitize_filename(rel.parts[0])
+        except Exception:
+            pass
+
+    return "UNGROUPED"
+
+
 def resolve_sheet_name(xlsx_path: Path, requested_sheet: str) -> Optional[str]:
     """
     Resolve sheet name.
@@ -836,7 +864,8 @@ def main():
             print(f"[WARN] file={xlsx_path} failed during setup: {e}")
             continue
 
-        file_out_dir = Path(args.out_dir) / sanitize_filename(xlsx_path.stem)
+        group_tag = infer_dataset_group(Path(xlsx_path), args.xlsx_dir)
+        file_out_dir = Path(args.out_dir) / group_tag / sanitize_filename(xlsx_path.stem)
         ensure_dir(str(file_out_dir))
         merged_items: List[Tuple[str, str]] = []
 
