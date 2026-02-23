@@ -227,11 +227,12 @@ data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_result__<sheet>__block<k>.json
 
 This project now includes two scripts for swelling prediction modeling:
 
-- `ml/build_feature_table.py`: build a unified training table from:
+- `src/build_feature_table.py`: build a unified training table from:
   - ECM outputs (`fit_result`, `fit_metrics`)
   - cycle/capacity/thickness/DCIR/ACIR/OCV data from raw xlsx
-- `ml/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
+- `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
   with `Ridge + RandomForest + XGBoost(if installed)`.
+- `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
 
 ### Extra Dependencies
 
@@ -242,7 +243,7 @@ pip install scikit-learn xgboost
 ### Step A: Build Unified Feature Table
 
 ```bash
-python ml/build_feature_table.py \
+python src/build_feature_table.py \
   --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
   --ecm_dir "./data/test_ecm_all4" \
   --out_csv "./data/ml/feature_table.csv" \
@@ -263,7 +264,7 @@ Output: `./data/ml/feature_table.csv`
 #### 1) Fixed cycle T, absolute thickness
 
 ```bash
-python ml/train_swelling_models.py \
+python src/train_swelling_models.py \
   --table_csv "./data/ml/feature_table.csv" \
   --out_dir "./data/ml/results" \
   --target_mode fixed_T \
@@ -275,7 +276,7 @@ python ml/train_swelling_models.py \
 #### 2) Fixed cycle T, delta thickness
 
 ```bash
-python ml/train_swelling_models.py \
+python src/train_swelling_models.py \
   --table_csv "./data/ml/feature_table.csv" \
   --out_dir "./data/ml/results" \
   --target_mode fixed_T \
@@ -287,7 +288,7 @@ python ml/train_swelling_models.py \
 #### 3) Future T->T+K, absolute thickness at t+K
 
 ```bash
-python ml/train_swelling_models.py \
+python src/train_swelling_models.py \
   --table_csv "./data/ml/feature_table.csv" \
   --out_dir "./data/ml/results" \
   --target_mode future_delta_TK \
@@ -299,7 +300,7 @@ python ml/train_swelling_models.py \
 #### 4) Future T->T+K, delta thickness (t+K minus t)
 
 ```bash
-python ml/train_swelling_models.py \
+python src/train_swelling_models.py \
   --table_csv "./data/ml/feature_table.csv" \
   --out_dir "./data/ml/results" \
   --target_mode future_delta_TK \
@@ -316,3 +317,23 @@ data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
 ```
 
 Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
+
+### Step C: Plot Feature Correlation Matrix
+
+```bash
+python src/plot_feature_corr.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_png "./data/ml/feature_corr.png" \
+  --method pearson \
+  --max_features 40 \
+  --annot
+```
+
+If you also want target columns in the matrix:
+
+```bash
+python src/plot_feature_corr.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_png "./data/ml/feature_corr_with_targets.png" \
+  --include_targets
+```
