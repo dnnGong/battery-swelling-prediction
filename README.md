@@ -318,6 +318,36 @@ data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
 
 Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 
+### How to Read ML Result Files
+
+#### `results__*.csv`
+
+Each row is one model result under one group (`CL`/`FLC`/`HYCL`), with key fields:
+
+- `model`: model name (`Ridge`, `RandomForest`, `XGBoost` if installed)
+- `group_tag`: dataset group
+- `rmse`: root mean squared error (lower is better)
+- `mae`: mean absolute error (lower is better)
+- `n_train`, `n_test`: sample counts in train/test split
+- `n_cells_train`, `n_cells_test`: unique cell counts in train/test
+- `n_features_used`: numeric feature count actually used in that group
+- `target_mode`, `label_mode`, `mode_tag`, `max_input_cycle`: run context
+
+#### `run_meta__*.json`
+
+This is the run configuration and feature snapshot for reproducibility:
+
+- `table_csv`: input feature table path
+- `target_mode`: `fixed_T` or `future_delta_TK`
+- `label_mode`: `absolute` or `delta`
+- `T`: target cycle for `fixed_T`
+- `future_k`: K value for `future_delta_TK`
+- `max_input_cycle`: max cycle allowed for input features
+- `seed`: random seed
+- `test_size`: test split ratio (grouped by `cell_key`)
+- `feature_count`: number of features used
+- `feature_columns`: full feature column list used in training
+
 ### Step C: Plot Feature Correlation Matrix
 
 ```bash
