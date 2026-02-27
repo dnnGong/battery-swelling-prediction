@@ -233,6 +233,7 @@ This project now includes two scripts for swelling prediction modeling:
 - `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
   with `Ridge + RandomForest + XGBoost(if installed)`.
 - `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
+- `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
 
 ### Extra Dependencies
 
@@ -403,4 +404,34 @@ python src/plot_feature_corr.py \
   --table_csv "./data/ml/feature_table.csv" \
   --out_png "./data/ml/feature_corr.png" \
   --mode features_targets
+```
+
+### Step D: Plot Prediction Scatter (`y_true` vs `y_pred`)
+
+By default, the script saves three scatter plots:
+- combined across all rows
+- split by model
+- split by group
+
+If `--out_png` is `./data/ml/pred_scatter.png`, the outputs will be:
+
+```text
+./data/ml/pred_scatter__combined.png
+./data/ml/pred_scatter__by_model.png
+./data/ml/pred_scatter__by_group.png
+```
+
+```bash
+python src/plot_predictions_scatter.py \
+  --pred_csv "./data/ml/results/predictions__fixed_T__absolute__fixedT_100.csv" \
+  --out_png "./data/ml/pred_scatter.png"
+```
+
+If you only want one view:
+
+```bash
+python src/plot_predictions_scatter.py \
+  --pred_csv "./data/ml/results/predictions__fixed_T__absolute__fixedT_100.csv" \
+  --out_png "./data/ml/pred_scatter.png" \
+  --mode by_model
 ```
