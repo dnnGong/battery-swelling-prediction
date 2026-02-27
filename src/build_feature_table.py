@@ -298,14 +298,30 @@ def build_table(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx_dir", required=True, help="Root directory containing xlsx files.")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Build a unified ML feature table by aligning raw xlsx cycle data with "
+            "ECM fitting outputs."
+        ),
+        epilog=(
+            "Example:\n"
+            "  python src/build_feature_table.py --xlsx_dir ./dataset/OneDrive_1_2-20-2026 "
+            "--ecm_dir ./data/test_ecm_all4 --out_csv ./data/ml/feature_table.csv "
+            "--min_cycle 5 --max_cycle 200 --future_k 20 --soc_target 50\n\n"
+            "The output CSV contains:\n"
+            "  - feat_* columns for ML inputs\n"
+            "  - y_* columns for thickness targets\n"
+            "  - metadata columns like group_tag, serial, cycle_t"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    ap.add_argument("--xlsx_dir", required=True, help="Root directory containing raw xlsx files.")
     ap.add_argument("--ecm_dir", required=True, help="Root directory containing ecm_fit outputs.")
     ap.add_argument("--out_csv", required=True, help="Output feature table CSV path.")
-    ap.add_argument("--min_cycle", type=int, default=5)
-    ap.add_argument("--max_cycle", type=int, default=200)
-    ap.add_argument("--future_k", type=int, default=20, help="K for future target columns (t->t+K).")
-    ap.add_argument("--soc_target", type=float, default=50.0, help="SOC target for DCIR feature slice.")
+    ap.add_argument("--min_cycle", type=int, default=5, help="Minimum cycle to keep when building samples.")
+    ap.add_argument("--max_cycle", type=int, default=200, help="Maximum cycle to keep when building samples.")
+    ap.add_argument("--future_k", type=int, default=20, help="Future horizon K used for y_future_* target columns.")
+    ap.add_argument("--soc_target", type=float, default=50.0, help="SOC target used to select the DCIR feature slice.")
     args = ap.parse_args()
 
     out_csv = Path(args.out_csv)

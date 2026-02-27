@@ -400,10 +400,30 @@ def run_for_one_serial(
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", required=True, help="Path to CL UDC xlsx (e.g., test1.xlsx)")
-    ap.add_argument("--serial", required=False, help="Serial number string (e.g., 2AM143681331). If omitted, auto-detect and process all serials in file.")
-    ap.add_argument("--out", required=True, help="Output directory")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Generate cycle-related plots from CL UDC Excel files, including "
+            "capacity, thickness, OCV, ACIR, and DCIR trends."
+        ),
+        epilog=(
+            "Example:\n"
+            "  python src/cycle_plot.py --xlsx ./dataset/CL-TC1.xlsx --out ./data/test_cycle\n\n"
+            "Outputs are written under:\n"
+            "  <out>/<serial>/CL_DischargeCapacity_vs_Cycle__<serial>.png\n"
+            "  <out>/<serial>/CL_Thickness2_vs_Cycle__<serial>.png\n"
+            "  <out>/<serial>/CL_OCV_vs_Cycle__<serial>.png\n"
+            "  <out>/<serial>/CL_ACIR_vs_Cycle__<serial>.png\n"
+            "  <out>/<serial>/CL_DCIR_vs_Cycle_by_SOC__<serial>.png"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    ap.add_argument("--xlsx", required=True, help="Input CL UDC xlsx file path.")
+    ap.add_argument(
+        "--serial",
+        required=False,
+        help="Only process one serial. If omitted, the script auto-detects and processes all serials in the workbook.",
+    )
+    ap.add_argument("--out", required=True, help="Output root directory. Each serial gets its own subfolder.")
     args = ap.parse_args()
 
     safe_mkdir(args.out)

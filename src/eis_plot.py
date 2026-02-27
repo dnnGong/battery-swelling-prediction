@@ -346,9 +346,22 @@ def plot_bode(e: EIS, out_prefix: str) -> None:
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", required=True, help="Path to UDC xlsx")
-    ap.add_argument("--out", required=True, help="Output directory")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Scan workbook sheets and generate EIS Nyquist/Bode plots by serial block."
+        ),
+        epilog=(
+            "Example:\n"
+            "  python src/eis_plot.py --xlsx ./dataset/test1.xlsx --out ./data/test_eis --invert-imag\n\n"
+            "Outputs are written under:\n"
+            "  <out>/<serial>/<sheet>__blkK_nyquist.png\n"
+            "  <out>/<serial>/<sheet>__blkK_bode_mag.png\n"
+            "  <out>/<serial>/<sheet>__blkK_bode_phase.png"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    ap.add_argument("--xlsx", required=True, help="Input UDC xlsx file path.")
+    ap.add_argument("--out", required=True, help="Output root directory. Each serial gets its own subfolder.")
     ap.add_argument("--serial", required=False, help="Only process this serial. If omitted, process all detected serials.")
     ap.add_argument(
         "--invert-imag",

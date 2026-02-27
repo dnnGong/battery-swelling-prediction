@@ -47,18 +47,37 @@ def plot_corr(corr: pd.DataFrame, out_path: Path, method: str, annot: bool, titl
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--table_csv", required=True, help="Path to feature_table.csv")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Plot correlation heatmaps from feature_table.csv for feature-only and/or "
+            "feature-plus-target analysis."
+        ),
+        epilog=(
+            "Example:\n"
+            "  python src/plot_feature_corr.py --table_csv ./data/ml/feature_table.csv "
+            "--out_png ./data/ml/feature_corr.png --method pearson --max_features 40 --annot\n\n"
+            "Outputs with --mode both:\n"
+            "  feature_corr__features.png\n"
+            "  feature_corr__features_targets.png"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    ap.add_argument("--table_csv", required=True, help="Input feature_table.csv path.")
     ap.add_argument("--out_png", required=True, help="Base output png path; actual outputs append suffixes like __features.png")
-    ap.add_argument("--feature_prefix", default="feat_", help="Feature column prefix")
-    ap.add_argument("--method", choices=["pearson", "spearman", "kendall"], default="pearson")
-    ap.add_argument("--max_features", type=int, default=40, help="Keep top-N features by variance for readability")
-    ap.add_argument("--annot", action="store_true", help="Show correlation values in cells")
+    ap.add_argument("--feature_prefix", default="feat_", help="Feature column prefix to include in the matrix.")
+    ap.add_argument("--method", choices=["pearson", "spearman", "kendall"], default="pearson", help="Correlation method.")
+    ap.add_argument("--max_features", type=int, default=40, help="Keep top-N features by variance for readability.")
+    ap.add_argument("--annot", action="store_true", help="Show correlation values in cells for small matrices.")
     ap.add_argument(
         "--mode",
         choices=["both", "features", "features_targets"],
         default="both",
-        help="Which heatmap(s) to save. Default: both",
+        help=(
+            "Which heatmap(s) to save:\n"
+            "  both             : save feature-only and feature+target heatmaps\n"
+            "  features         : save feature-only heatmap\n"
+            "  features_targets : save feature+target heatmap"
+        ),
     )
     ap.add_argument(
         "--include_targets",

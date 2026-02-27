@@ -799,28 +799,46 @@ def load_eis_with_rescue_and_fallback(
 # -----------------------------
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", required=False, help="Single xlsx file path.")
-    ap.add_argument("--xlsx_dir", required=False, help="Directory containing xlsx files.")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Fit EIS data to equivalent circuit models, with optional Warburg tail, "
+            "batch xlsx traversal, serial auto-detection, and fit-quality export."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  Single file, no Warburg:\n"
+            "    python src/ecm_fit.py --xlsx ./dataset/test1.xlsx --sheet 02_PreEIS --block 2 "
+            "--circuit \"R0-p(R1,CPE1)-p(R2,CPE2)\" --guess \"\" --out_dir ./data/test_ecm\n\n"
+            "  Directory batch, auto sheet, with Warburg:\n"
+            "    python src/ecm_fit.py --xlsx_dir ./dataset/OneDrive_1_2-20-2026 --recursive "
+            "--sheet auto --circuit \"R0-p(R1,CPE1)-p(R2,CPE2)\" --warburg W --guess \"\" "
+            "--merge_serial_plots --out_dir ./data/test_ecm_all\n\n"
+            "Outputs include:\n"
+            "  nyquist_fit__*.png, fit_metrics__*.json, fit_residuals__*.csv, fit_result__*.json"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    ap.add_argument("--xlsx", required=False, help="Single xlsx file path. Mutually exclusive with --xlsx_dir.")
+    ap.add_argument("--xlsx_dir", required=False, help="Directory containing xlsx files. Mutually exclusive with --xlsx.")
     ap.add_argument("--recursive", action="store_true", help="Recursively scan --xlsx_dir for *.xlsx files.")
-    ap.add_argument("--sheet", default="02_PreEIS")
-    ap.add_argument("--soc", type=int, default=50, help="kept for CLI compatibility; rescue logic does not rely on SOC header")
-    ap.add_argument("--block", type=int, default=2)
-    ap.add_argument("--header", type=int, default=None)
-    ap.add_argument("--imag_is_negative", action="store_true")
+    ap.add_argument("--sheet", default="02_PreEIS", help="Sheet name to use, or 'auto' to detect from common EIS sheet names.")
+    ap.add_argument("--soc", type=int, default=50, help="Kept for CLI compatibility; rescue logic does not rely on SOC header.")
+    ap.add_argument("--block", type=int, default=2, help="Preferred serial block index. Script may fall back to a better block.")
+    ap.add_argument("--header", type=int, default=None, help="Optional header row override.")
+    ap.add_argument("--imag_is_negative", action="store_true", help="Interpret imag column as already negative.")
     ap.add_argument("--auto_sign", dest="auto_sign", action="store_true", help="Auto-detect imag sign for Nyquist consistency.")
     ap.add_argument("--no_auto_sign", dest="auto_sign", action="store_false", help="Disable auto sign detection.")
     ap.set_defaults(auto_sign=True)
-    ap.add_argument("--assume_mohm", action="store_true", help="Assume Real/Imag numeric are in mOhm and convert to Ohm (x1e-3).")
+    ap.add_argument("--assume_mohm", action="store_true", help="Assume Real/Imag numeric values are in mOhm and convert to Ohm.")
 
     # no-Warburg default: 2-CPE often fits battery arcs better than ideal 2-RC
-    ap.add_argument("--circuit", default="R0-p(R1,CPE1)-p(R2,CPE2)")
+    ap.add_argument("--circuit", default="R0-p(R1,CPE1)-p(R2,CPE2)", help="Base ECM topology before optional Warburg append.")
     ap.add_argument("--warburg", default="none", choices=["none", "W", "Wo", "Ws"], help="Append a Warburg element to circuit tail.")
     ap.add_argument("--guess", default="", help="Comma-separated initial guess. Empty -> auto guess from data.")
 
-    ap.add_argument("--out_dir", default="./out_fit")
+    ap.add_argument("--out_dir", default="./out_fit", help="Output root directory.")
     ap.add_argument("--serial", required=False, help="Only process this serial. If omitted, process all detected serials.")
-    ap.add_argument("--min_points", type=int, default=5)
+    ap.add_argument("--min_points", type=int, default=5, help="Minimum valid EIS points required for fitting.")
     ap.add_argument("--drop_first_n", type=int, default=0, help="Drop N highest-frequency points before fitting.")
     ap.add_argument("--fmin", type=float, default=None, help="Minimum frequency (Hz) to keep.")
     ap.add_argument("--fmax", type=float, default=None, help="Maximum frequency (Hz) to keep.")
