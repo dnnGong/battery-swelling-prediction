@@ -348,7 +348,18 @@ This is the run configuration and feature snapshot for reproducibility:
 - `feature_count`: number of features used
 - `feature_columns`: full feature column list used in training
 
-### Step C: Plot Feature Correlation Matrix
+### Step C: Plot Feature Correlation Matrices
+
+By default, the script saves two heatmaps:
+- feature-only correlation matrix
+- feature + target correlation matrix
+
+If `--out_png` is `./data/ml/feature_corr.png`, the outputs will be:
+
+```text
+./data/ml/feature_corr__features.png
+./data/ml/feature_corr__features_targets.png
+```
 
 ```bash
 python src/plot_feature_corr.py \
@@ -359,11 +370,20 @@ python src/plot_feature_corr.py \
   --annot
 ```
 
-If you also want target columns in the matrix:
+If you only want the feature-only matrix:
 
 ```bash
 python src/plot_feature_corr.py \
   --table_csv "./data/ml/feature_table.csv" \
-  --out_png "./data/ml/feature_corr_with_targets.png" \
-  --include_targets
+  --out_png "./data/ml/feature_corr.png" \
+  --mode features
+```
+
+If you only want the feature + target matrix:
+
+```bash
+python src/plot_feature_corr.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_png "./data/ml/feature_corr.png" \
+  --mode features_targets
 ```
