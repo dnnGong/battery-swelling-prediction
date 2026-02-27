@@ -117,16 +117,17 @@ def fit_eval_one_group(
     test_size: float,
     min_rows: int,
     min_cells: int,
-) -> List[Dict]:
+) -> Tuple[List[Dict], List[Dict]]:
     records: List[Dict] = []
+    pred_rows: List[Dict] = []
     sub = df_group.dropna(subset=[label_col, "cell_key"]).copy()
     if len(sub) < min_rows or sub["cell_key"].nunique() < min_cells:
-        return records
+        return records, pred_rows
 
     # Drop feature columns that are entirely NaN in this group.
     valid_cols = [c for c in feature_cols if sub[c].notna().sum() > 0]
     if len(valid_cols) < 3:
-        return records
+        return records, pred_rows
 
     # Split first, then impute by train medians to avoid leakage.
     tr_idx, te_idx = train_test_group_split(sub, test_size=test_size, seed=seed)
@@ -164,7 +165,22 @@ def fit_eval_one_group(
                 "mae": float(np.mean(np.abs(y_te - pred))),
             }
         )
-    return records
+        for row, y_true_i, y_pred_i in zip(te_df.itertuples(index=False), y_te, pred):
+            pred_rows.append(
+                {
+                    "model": name,
+                    "cell_key": row.cell_key,
+                    "serial": getattr(row, "serial", ""),
+                    "group_tag": getattr(row, "group_tag", ""),
+                    "cycle_t": int(row.cycle_t),
+                    "target_cycle": int(row.target_cycle),
+                    "label_col": label_col,
+                    "y_true": float(y_true_i),
+                    "y_pred": float(y_pred_i),
+                    "abs_error": float(abs(y_true_i - y_pred_i)),
+                }
+            )
+    return records, pred_rows
 
 
 def main() -> None:
@@ -210,9 +226,10 @@ def main() -> None:
         raise ValueError("No numeric feature columns found.")
 
     summary_rows: List[Dict] = []
+    pred_rows_all: List[Dict] = []
     for group in ["CL", "FLC", "HYCL"]:
         dg = data[data["group_tag"] == group].copy()
-        recs = fit_eval_one_group(
+        recs, pred_rows = fit_eval_one_group(
             df_group=dg,
             feature_cols=feature_cols,
             label_col=label_col,
@@ -233,6 +250,16 @@ def main() -> None:
                 }
             )
         summary_rows.extend(recs)
+        for p in pred_rows:
+            p.update(
+                {
+                    "target_mode": args.target_mode,
+                    "label_mode": args.label_mode,
+                    "mode_tag": mode_tag,
+                    "max_input_cycle": int(args.max_input_cycle),
+                }
+            )
+        pred_rows_all.extend(pred_rows)
 
     if not summary_rows:
         raise ValueError("No valid group/model results. Check sample sizes per group.")
@@ -241,6 +268,9 @@ def main() -> None:
 
     res_csv = out_dir / f"results__{args.target_mode}__{args.label_mode}__{mode_tag}.csv"
     res.to_csv(res_csv, index=False)
+
+    pred_csv = out_dir / f"predictions__{args.target_mode}__{args.label_mode}__{mode_tag}.csv"
+    pd.DataFrame(pred_rows_all).to_csv(pred_csv, index=False)
 
     run_meta = {
         "table_csv": str(args.table_csv),
@@ -258,6 +288,7 @@ def main() -> None:
     meta_json.write_text(json.dumps(run_meta, indent=2, ensure_ascii=True), encoding="utf-8")
 
     print(f"[INFO] Saved results: {res_csv}")
+    print(f"[INFO] Saved predictions: {pred_csv}")
     print(f"[INFO] Saved run meta: {meta_json}")
     print(res)
 

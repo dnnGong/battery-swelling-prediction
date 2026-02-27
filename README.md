@@ -313,6 +313,7 @@ python src/train_swelling_models.py \
 
 ```text
 data/ml/results/results__<target_mode>__<label_mode>__<mode_tag>.csv
+data/ml/results/predictions__<target_mode>__<label_mode>__<mode_tag>.csv
 data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
 ```
 
@@ -347,6 +348,22 @@ This is the run configuration and feature snapshot for reproducibility:
 - `test_size`: test split ratio (grouped by `cell_key`)
 - `feature_count`: number of features used
 - `feature_columns`: full feature column list used in training
+
+#### `predictions__*.csv`
+
+Each row is one test sample prediction, useful for direct comparison between predicted and true thickness:
+
+- `model`: model name
+- `cell_key`: cell/sample identifier used for grouped split
+- `serial`: serial number if available
+- `group_tag`: `CL`, `FLC`, or `HYCL`
+- `cycle_t`: input anchor cycle used by the model
+- `target_cycle`: cycle of the target thickness being predicted
+- `label_col`: target column used internally (`target_abs` or `target_delta`)
+- `y_true`: true target value
+- `y_pred`: predicted target value
+- `abs_error`: absolute prediction error
+- `target_mode`, `label_mode`, `mode_tag`, `max_input_cycle`: run context
 
 ### Step C: Plot Feature Correlation Matrices
 
