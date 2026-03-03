@@ -234,6 +234,8 @@ This project now includes two scripts for swelling prediction modeling:
   with `Ridge + RandomForest + XGBoost(if installed)`.
 - `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
 - `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
+- `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
+  row/cycle summaries including `EVTemp (C)` / `EVHum (%)`, with optional merge into `feature_table.csv`.
 
 ### Extra Dependencies
 
@@ -255,6 +257,21 @@ python src/build_feature_table.py \
 ```
 
 Output: `./data/ml/feature_table.csv`
+
+### Step A0 (Optional): Parse `dataset/raw_data` and add temperature features
+
+If you want to use raw Maccor temperature as ML features:
+
+```bash
+python src/parse_raw_maccor.py \
+  --raw_dir "./dataset/raw_data" \
+  --out_row_csv "./data/ml/raw_maccor_rows.csv" \
+  --out_cycle_csv "./data/ml/raw_maccor_cycle_summary.csv" \
+  --feature_table_csv "./data/ml/feature_table.csv" \
+  --out_feature_table_csv "./data/ml/feature_table_with_raw_temp.csv"
+```
+
+Then use `feature_table_with_raw_temp.csv` as input to `train_swelling_models.py`.
 
 ### Step B: Train & Evaluate (Grouped by CL/FLC/HYCL)
 
