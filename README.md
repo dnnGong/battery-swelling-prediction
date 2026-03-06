@@ -236,6 +236,8 @@ This project now includes two scripts for swelling prediction modeling:
 - `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
 - `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
   row/cycle summaries including `EVTemp (C)` / `EVHum (%)`, with optional merge into `feature_table.csv`.
+- `src/filter_feature_table_outliers.py`: optional plug-in for outlier detection/removal on feature tables.
+  Default mode is report-only (no row deletion).
 
 ### Extra Dependencies
 
@@ -272,6 +274,40 @@ python src/parse_raw_maccor.py \
 ```
 
 Then use `feature_table_with_raw_temp.csv` as input to `train_swelling_models.py`.
+
+### Step A1 (Optional): Outlier Detection / Removal (Plug-in)
+
+This step is optional and can be enabled or skipped as needed.
+By default, the script only reports outliers and does not modify your table.
+
+```bash
+python src/filter_feature_table_outliers.py \
+  --table_csv "./data/ml/test15/feature_table_test15.csv" \
+  --out_dir "./data/ml/test15/outlier_report" \
+  --sample_mode future_delta_TK \
+  --max_input_cycle 50 \
+  --group_tag HYCL
+```
+
+To actually drop flagged outliers and export a cleaned table:
+
+```bash
+python src/filter_feature_table_outliers.py \
+  --table_csv "./data/ml/test15/feature_table_test15.csv" \
+  --out_dir "./data/ml/test15/outlier_report_drop" \
+  --sample_mode future_delta_TK \
+  --max_input_cycle 50 \
+  --group_tag HYCL \
+  --apply_drop \
+  --out_clean_csv "./data/ml/test15/feature_table_test15_cleaned.csv"
+```
+
+Key options:
+- `--method robust|iqr|combined`: detector type.
+- `--combined_rule two_of_three|any`: how to combine detectors in `combined` mode.
+  - `two_of_three` (default): balanced, less aggressive
+  - `any`: aggressive
+- `--robust_z_thresh`, `--iqr_k`, `--iqr_min_count`, `--mahal_q`: sensitivity controls.
 
 ### Step B: Train & Evaluate (Grouped by CL/FLC/HYCL)
 

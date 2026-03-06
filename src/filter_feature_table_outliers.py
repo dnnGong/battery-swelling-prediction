@@ -113,9 +113,19 @@ def main() -> None:
     ap.add_argument("--max_input_cycle", type=int, default=50, help="Max cycle for fixed_T/future modes.")
     ap.add_argument("--group_tag", default="", help="Optional group filter: CL/FLC/HYCL.")
     ap.add_argument("--method", choices=["robust", "iqr", "combined"], default="combined")
+    ap.add_argument(
+        "--combined_rule",
+        choices=["any", "two_of_three"],
+        default="two_of_three",
+        help=(
+            "How to combine robust/IQR/Mahalanobis when --method combined:\n"
+            "  any          : flag if any detector triggers (aggressive)\n"
+            "  two_of_three : flag only if at least 2 detectors trigger (balanced)"
+        ),
+    )
     ap.add_argument("--robust_z_thresh", type=float, default=6.0, help="Threshold on max absolute robust z-score.")
     ap.add_argument("--iqr_k", type=float, default=3.0, help="IQR multiplier for extreme fence.")
-    ap.add_argument("--iqr_min_count", type=int, default=1, help="Min number of violated features to flag by IQR.")
+    ap.add_argument("--iqr_min_count", type=int, default=2, help="Min number of violated features to flag by IQR.")
     ap.add_argument("--mahal_q", type=float, default=0.995, help="Mahalanobis quantile threshold for combined mode.")
     ap.add_argument("--max_features", type=int, default=40, help="Use top-N variance features for stable detection.")
     ap.add_argument("--apply_drop", action="store_true", help="Actually remove flagged rows from original table.")
@@ -166,25 +176,40 @@ def main() -> None:
     d2 = pd.Series(mahalanobis_d2(x), index=x.index)
     d2_thr = float(np.quantile(d2, min(max(args.mahal_q, 0.5), 0.9999)))
 
+    robust_hit = max_abs_rz >= args.robust_z_thresh
+    iqr_hit = iqr_counts >= max(1, args.iqr_min_count)
+    mahal_hit = d2 >= d2_thr
+
     if args.method == "robust":
-        flag = max_abs_rz >= args.robust_z_thresh
+        flag = robust_hit
     elif args.method == "iqr":
-        flag = iqr_counts >= max(1, args.iqr_min_count)
+        flag = iqr_hit
     else:
-        flag = (
-            (max_abs_rz >= args.robust_z_thresh)
-            | (iqr_counts >= max(1, args.iqr_min_count))
-            | (d2 >= d2_thr)
-        )
+        if args.combined_rule == "any":
+            flag = robust_hit | iqr_hit | mahal_hit
+        else:
+            vote_sum = robust_hit.astype(int) + iqr_hit.astype(int) + mahal_hit.astype(int)
+            flag = vote_sum >= 2
 
     report = work.copy()
     report["outlier_flag"] = flag.values
+    report["hit_robust"] = robust_hit.values
+    report["hit_iqr"] = iqr_hit.values
+    report["hit_mahal"] = mahal_hit.values
     report["max_abs_robust_z"] = max_abs_rz.values
     report["iqr_outlier_feature_count"] = iqr_counts.values
     report["mahalanobis_d2"] = d2.values
 
     id_cols = [c for c in ["serial", "cell_key", "group_tag", "cycle_t", "target_cycle"] if c in report.columns]
-    outlier_cols = id_cols + ["outlier_flag", "max_abs_robust_z", "iqr_outlier_feature_count", "mahalanobis_d2"] + feat_cols
+    outlier_cols = id_cols + [
+        "outlier_flag",
+        "hit_robust",
+        "hit_iqr",
+        "hit_mahal",
+        "max_abs_robust_z",
+        "iqr_outlier_feature_count",
+        "mahalanobis_d2",
+    ] + feat_cols
     outlier_csv = out_dir / "outlier_rows.csv"
     report[outlier_cols].sort_values(
         ["outlier_flag", "mahalanobis_d2", "max_abs_robust_z"], ascending=[False, False, False]
@@ -195,12 +220,16 @@ def main() -> None:
         "sample_mode": args.sample_mode,
         "group_tag": args.group_tag,
         "method": args.method,
+        "combined_rule": args.combined_rule,
         "rows_input_total": int(len(full)),
         "rows_used_for_detection": int(len(report)),
         "features_used_count": int(len(feat_cols)),
         "features_used": feat_cols,
         "outlier_count": int(report["outlier_flag"].sum()),
         "outlier_ratio": float(report["outlier_flag"].mean()),
+        "hit_count_robust": int(robust_hit.sum()),
+        "hit_count_iqr": int(iqr_hit.sum()),
+        "hit_count_mahal": int(mahal_hit.sum()),
         "robust_z_thresh": float(args.robust_z_thresh),
         "iqr_k": float(args.iqr_k),
         "iqr_min_count": int(args.iqr_min_count),
