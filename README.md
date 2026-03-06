@@ -232,6 +232,9 @@ This project now includes two scripts for swelling prediction modeling:
   - cycle/capacity/thickness/DCIR/ACIR/OCV data from raw xlsx
 - `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
   with `Ridge + RandomForest + XGBoost(if installed)`.
+- `src/train_swelling_deep.py`: train/evaluate grouped deep models (`MLP/CNN/LSTM`) with PyTorch.
+- `src/benchmark_models.py`: batch benchmark runner for `train_swelling_models.py`
+  across multiple `model_set x feature_set` combinations.
 - `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
 - `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
 - `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
@@ -243,6 +246,12 @@ This project now includes two scripts for swelling prediction modeling:
 
 ```bash
 pip install scikit-learn xgboost
+```
+
+For deep models:
+
+```bash
+pip install torch
 ```
 
 ### Step A: Build Unified Feature Table
@@ -327,6 +336,22 @@ python src/train_swelling_models.py \
   --max_input_cycle 50
 ```
 
+You can expand models and feature subsets with:
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results_ext" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50 \
+  --model_set extended \
+  --feature_set variance \
+  --variance_top_n 16 \
+  --run_tag "extended_variance"
+```
+
 #### 2) Fixed cycle T, delta thickness
 
 ```bash
@@ -372,6 +397,65 @@ data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
 ```
 
 Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
+
+`train_swelling_models.py` supports:
+- `--model_set basic|extended|all`
+  - `basic`: Ridge + RandomForest + XGBoost(if available)
+  - `extended`: basic + Dummy + Linear + PCR + PLSR + GaussianProcess
+- `--feature_set full|variance|discharge|ecm|custom`
+- `--variance_top_n` for `variance`
+- `--custom_features` for `custom`
+- `--run_tag` to append a suffix in output file names
+
+### Step B1: Batch Benchmark (Optional)
+
+Run multiple model/feature combinations in one command:
+
+```bash
+python src/benchmark_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/benchmark" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50 \
+  --model_sets "basic,extended" \
+  --feature_sets "full,variance,discharge"
+```
+
+Batch outputs:
+- `benchmark_runs.csv`: run ledger + status
+- `benchmark_results_aggregate.csv`: concatenated `results__*.csv` from successful runs
+- per-run logs under each benchmark subfolder
+
+### Step B2: Deep Models (Phase 2: MLP/CNN/LSTM)
+
+Train deep models with the same target modes and output format:
+
+```bash
+python src/train_swelling_deep.py \
+  --table_csv "./data/ml/hycl_od/feature_table_hycl_pruned.csv" \
+  --out_dir "./data/ml/hycl_od/results_deep" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50 \
+  --groups HYCL \
+  --models mlp,cnn,lstm \
+  --feature_set variance \
+  --variance_top_n 20 \
+  --epochs 120 \
+  --batch_size 32 \
+  --lr 1e-3 \
+  --hidden_dim 64 \
+  --run_tag "deep_v1"
+```
+
+Useful options:
+- `--groups`: choose subset groups, e.g. `HYCL` or `CL,FLC,HYCL`
+- `--feature_set`: `full|variance|discharge|ecm|custom`
+- `--custom_features`: comma list when `--feature_set custom`
+- `--models`: comma list from `mlp,cnn,lstm`
 
 ### How to Read ML Result Files
 
