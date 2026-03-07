@@ -225,7 +225,7 @@ data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_result__<sheet>__block<k>.json
 
 ## 4) ML Pipeline (ECM + Other Features)
 
-This project now includes two scripts for swelling prediction modeling:
+This project now includes multiple scripts for swelling prediction modeling:
 
 - `src/build_feature_table.py`: build a unified training table from:
   - ECM outputs (`fit_result`, `fit_metrics`)
@@ -233,6 +233,7 @@ This project now includes two scripts for swelling prediction modeling:
 - `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
   with `Ridge + RandomForest + XGBoost(if installed)`.
 - `src/train_swelling_deep.py`: train/evaluate grouped deep models (`MLP/CNN/LSTM`) with PyTorch.
+- `src/train_swelling_transformer.py`: train/evaluate grouped Transformer model with PyTorch.
 - `src/benchmark_models.py`: batch benchmark runner for `train_swelling_models.py`
   across multiple `model_set x feature_set` combinations.
 - `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
@@ -456,6 +457,38 @@ Useful options:
 - `--feature_set`: `full|variance|discharge|ecm|custom`
 - `--custom_features`: comma list when `--feature_set custom`
 - `--models`: comma list from `mlp,cnn,lstm`
+
+### Step B3: Transformer Model (Phase 2: Transformer)
+
+Train Transformer with the same grouped split/output format:
+
+```bash
+python src/train_swelling_transformer.py \
+  --table_csv "./data/ml/hycl_od/feature_table_hycl_pruned.csv" \
+  --out_dir "./data/ml/hycl_od/results_transformer" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50 \
+  --groups HYCL \
+  --feature_set variance \
+  --variance_top_n 20 \
+  --epochs 160 \
+  --batch_size 32 \
+  --lr 5e-4 \
+  --hidden_dim 64 \
+  --n_heads 4 \
+  --n_layers 2 \
+  --ff_dim 128 \
+  --run_tag "transformer_v1"
+```
+
+Useful options:
+- `--groups`: choose subset groups, e.g. `HYCL` or `CL,FLC,HYCL`
+- `--feature_set`: `full|variance|discharge|ecm|custom`
+- `--custom_features`: comma list when `--feature_set custom`
+- `--hidden_dim`: Transformer `d_model` (must be divisible by `--n_heads`)
+- `--n_heads`, `--n_layers`, `--ff_dim`: Transformer architecture settings
 
 ### How to Read ML Result Files
 
