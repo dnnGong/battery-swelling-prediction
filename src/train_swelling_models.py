@@ -4,7 +4,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -103,7 +103,119 @@ class AdaptivePLSRegressor(BaseEstimator, RegressorMixin):
         return np.asarray(pred).reshape(-1)
 
 
-def build_models(seed: int, model_set: str, include_models: Optional[List[str]] = None) -> Dict[str, object]:
+class StepwiseLinearRegressor(BaseEstimator, RegressorMixin):
+    """
+    Forward stepwise linear regression with train-only CV scoring.
+
+    This keeps compatibility with the existing sklearn-like model registry while
+    exposing a per-step history for downstream reporting.
+    """
+
+    def __init__(
+        self,
+        max_features: int = 8,
+        min_improvement: float = 1e-4,
+        cv_splits: int = 5,
+        random_state: int = 42,
+    ) -> None:
+        self.max_features = int(max_features)
+        self.min_improvement = float(min_improvement)
+        self.cv_splits = int(cv_splits)
+        self.random_state = int(random_state)
+
+    def _score_subset(self, X: np.ndarray, y: np.ndarray, cols: List[int]) -> float:
+        from sklearn.linear_model import LinearRegression
+        from sklearn.model_selection import KFold
+        from sklearn.preprocessing import StandardScaler
+
+        X_sub = X[:, cols]
+        n_samples = len(X_sub)
+        n_splits = max(2, min(self.cv_splits, n_samples))
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
+
+        fold_mae: List[float] = []
+        for tr_idx, va_idx in kf.split(X_sub):
+            scaler = StandardScaler()
+            X_tr = scaler.fit_transform(X_sub[tr_idx])
+            X_va = scaler.transform(X_sub[va_idx])
+            model = LinearRegression()
+            model.fit(X_tr, y[tr_idx])
+            pred = np.asarray(model.predict(X_va)).reshape(-1)
+            fold_mae.append(float(np.mean(np.abs(y[va_idx] - pred))))
+        return float(np.mean(fold_mae))
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "StepwiseLinearRegressor":
+        from sklearn.linear_model import LinearRegression
+        from sklearn.preprocessing import StandardScaler
+
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float).reshape(-1)
+        n_samples, n_features = X.shape
+        if n_samples < 3 or n_features < 1:
+            raise ValueError("StepwiseLinearRegressor requires at least 3 rows and 1 feature.")
+
+        max_features = max(1, min(self.max_features, n_features))
+        remaining = list(range(n_features))
+        selected: List[int] = []
+        history: List[Dict[str, Any]] = []
+        best_score: Optional[float] = None
+
+        for step in range(1, max_features + 1):
+            step_candidates: List[Tuple[float, int]] = []
+            for cand in remaining:
+                cols = selected + [cand]
+                cv_mae = self._score_subset(X, y, cols)
+                step_candidates.append((cv_mae, cand))
+            if not step_candidates:
+                break
+
+            step_candidates.sort(key=lambda x: (x[0], x[1]))
+            candidate_score, candidate_col = step_candidates[0]
+            improvement = 0.0 if best_score is None else float(best_score - candidate_score)
+            if best_score is not None and improvement < self.min_improvement:
+                break
+
+            selected.append(candidate_col)
+            remaining.remove(candidate_col)
+            best_score = candidate_score
+            history.append(
+                {
+                    "step": int(step),
+                    "feature_index": int(candidate_col),
+                    "cv_mae": float(candidate_score),
+                    "improvement": float(improvement),
+                }
+            )
+
+        self.selected_idx_ = selected
+        self.history_ = history
+        self.n_features_in_ = int(n_features)
+
+        self.scaler_ = StandardScaler()
+        X_sel = X[:, self.selected_idx_]
+        X_scaled = self.scaler_.fit_transform(X_sel)
+        self.model_ = LinearRegression()
+        self.model_.fit(X_scaled, y)
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        if not hasattr(self, "model_") or not hasattr(self, "selected_idx_"):
+            raise RuntimeError("StepwiseLinearRegressor not fitted yet.")
+        X = np.asarray(X, dtype=float)
+        X_sel = X[:, self.selected_idx_]
+        X_scaled = self.scaler_.transform(X_sel)
+        pred = self.model_.predict(X_scaled)
+        return np.asarray(pred).reshape(-1)
+
+
+def build_models(
+    seed: int,
+    model_set: str,
+    include_models: Optional[List[str]] = None,
+    stepwise_max_features: int = 8,
+    stepwise_min_improvement: float = 1e-4,
+    stepwise_cv_splits: int = 5,
+) -> Dict[str, object]:
     try:
         from sklearn.linear_model import LinearRegression, Ridge
         from sklearn.dummy import DummyRegressor
@@ -122,6 +234,12 @@ def build_models(seed: int, model_set: str, include_models: Optional[List[str]] 
         "DummyMean": DummyRegressor(strategy="mean"),
         "Linear": make_pipeline(StandardScaler(), LinearRegression()),
         "Ridge": make_pipeline(StandardScaler(), Ridge(alpha=1.0, random_state=seed)),
+        "StepwiseLinear": StepwiseLinearRegressor(
+            max_features=stepwise_max_features,
+            min_improvement=stepwise_min_improvement,
+            cv_splits=stepwise_cv_splits,
+            random_state=seed,
+        ),
         "PCR": make_pipeline(StandardScaler(), PCA(n_components=0.95, svd_solver="full"), LinearRegression()),
         "PLSR": make_pipeline(StandardScaler(), AdaptivePLSRegressor(max_components=8)),
         "GaussianProcess": make_pipeline(
@@ -160,7 +278,7 @@ def build_models(seed: int, model_set: str, include_models: Optional[List[str]] 
 
     model_set_defs: Dict[str, List[str]] = {
         "basic": ["Ridge", "RandomForest", "XGBoost"],
-        "extended": ["DummyMean", "Linear", "Ridge", "PCR", "PLSR", "GaussianProcess", "RandomForest", "XGBoost"],
+        "extended": ["DummyMean", "Linear", "StepwiseLinear", "Ridge", "PCR", "PLSR", "GaussianProcess", "RandomForest", "XGBoost"],
         "all": list(registry.keys()),
     }
     wanted = model_set_defs.get(model_set, list(registry.keys()))
@@ -224,17 +342,21 @@ def fit_eval_one_group(
     test_size: float,
     min_rows: int,
     min_cells: int,
-) -> Tuple[List[Dict], List[Dict]]:
+    stepwise_max_features: int,
+    stepwise_min_improvement: float,
+    stepwise_cv_splits: int,
+) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     records: List[Dict] = []
     pred_rows: List[Dict] = []
+    trace_rows: List[Dict] = []
     sub = df_group.dropna(subset=[label_col, "cell_key"]).copy()
     if len(sub) < min_rows or sub["cell_key"].nunique() < min_cells:
-        return records, pred_rows
+        return records, pred_rows, trace_rows
 
     # Drop feature columns that are entirely NaN in this group.
     valid_cols = [c for c in feature_cols if sub[c].notna().sum() > 0]
     if len(valid_cols) < 3:
-        return records, pred_rows
+        return records, pred_rows, trace_rows
 
     # Split first, then impute by train medians to avoid leakage.
     tr_idx, te_idx = train_test_group_split(sub, test_size=test_size, seed=seed)
@@ -254,10 +376,21 @@ def fit_eval_one_group(
     y_tr = tr_df[label_col].to_numpy(dtype=float).reshape(-1)
     y_te = te_df[label_col].to_numpy(dtype=float).reshape(-1)
 
-    models = build_models(seed=seed, model_set=model_set, include_models=include_models)
+    models = build_models(
+        seed=seed,
+        model_set=model_set,
+        include_models=include_models,
+        stepwise_max_features=stepwise_max_features,
+        stepwise_min_improvement=stepwise_min_improvement,
+        stepwise_cv_splits=stepwise_cv_splits,
+    )
     for name, model in models.items():
         model.fit(X_tr, y_tr)
         pred = np.asarray(model.predict(X_te)).reshape(-1)
+        selected_features = ""
+        if hasattr(model, "selected_idx_"):
+            selected_idx = [int(i) for i in getattr(model, "selected_idx_", [])]
+            selected_features = ",".join(valid_cols[i] for i in selected_idx)
         records.append(
             {
                 "model": name,
@@ -268,8 +401,22 @@ def fit_eval_one_group(
                 "n_features_used": int(len(valid_cols)),
                 "rmse": safe_rmse(y_te, pred),
                 "mae": float(np.mean(np.abs(y_te - pred))),
+                "selected_features": selected_features,
             }
         )
+        if hasattr(model, "history_"):
+            for step_rec in getattr(model, "history_", []):
+                feat_idx = int(step_rec["feature_index"])
+                trace_rows.append(
+                    {
+                        "model": name,
+                        "step": int(step_rec["step"]),
+                        "feature_index": feat_idx,
+                        "feature_name": valid_cols[feat_idx],
+                        "cv_mae": float(step_rec["cv_mae"]),
+                        "improvement": float(step_rec["improvement"]),
+                    }
+                )
         for row, y_true_i, y_pred_i in zip(te_df.itertuples(index=False), y_te, pred):
             pred_rows.append(
                 {
@@ -285,7 +432,7 @@ def fit_eval_one_group(
                     "abs_error": float(abs(y_true_i - y_pred_i)),
                 }
             )
-    return records, pred_rows
+    return records, pred_rows, trace_rows
 
 
 def main() -> None:
@@ -341,7 +488,7 @@ def main() -> None:
         help=(
             "Model bundle to train:\n"
             "  basic    : Ridge, RandomForest, XGBoost(if available)\n"
-            "  extended : basic + Dummy/Linear/PCR/PLSR/GPR\n"
+            "  extended : basic + Dummy/Linear/StepwiseLinear/PCR/PLSR/GPR\n"
             "  all      : all registered models"
         ),
     )
@@ -361,6 +508,14 @@ def main() -> None:
     )
     ap.add_argument("--variance_top_n", type=int, default=16, help="Top-N features for --feature_set variance.")
     ap.add_argument("--custom_features", default="", help="Comma list for --feature_set custom.")
+    ap.add_argument("--stepwise_max_features", type=int, default=8, help="Maximum number of features for StepwiseLinear.")
+    ap.add_argument(
+        "--stepwise_min_improvement",
+        type=float,
+        default=1e-4,
+        help="Minimum CV-MAE improvement required to accept the next stepwise feature.",
+    )
+    ap.add_argument("--stepwise_cv_splits", type=int, default=5, help="K-fold splits used by StepwiseLinear on train data.")
     ap.add_argument("--run_tag", default="", help="Optional suffix tag appended to mode_tag in output file names.")
     args = ap.parse_args()
 
@@ -404,9 +559,10 @@ def main() -> None:
 
     summary_rows: List[Dict] = []
     pred_rows_all: List[Dict] = []
+    trace_rows_all: List[Dict] = []
     for group in ["CL", "FLC", "HYCL"]:
         dg = data[data["group_tag"] == group].copy()
-        recs, pred_rows = fit_eval_one_group(
+        recs, pred_rows, trace_rows = fit_eval_one_group(
             df_group=dg,
             feature_cols=feature_cols,
             label_col=label_col,
@@ -416,6 +572,9 @@ def main() -> None:
             test_size=args.test_size,
             min_rows=args.min_rows_per_group,
             min_cells=args.min_cells_per_group,
+            stepwise_max_features=args.stepwise_max_features,
+            stepwise_min_improvement=args.stepwise_min_improvement,
+            stepwise_cv_splits=args.stepwise_cv_splits,
         )
         for r in recs:
             r.update(
@@ -443,6 +602,19 @@ def main() -> None:
                 }
             )
         pred_rows_all.extend(pred_rows)
+        for t in trace_rows:
+            t.update(
+                {
+                    "group_tag": group,
+                    "target_mode": args.target_mode,
+                    "label_mode": args.label_mode,
+                    "mode_tag": mode_tag,
+                    "max_input_cycle": int(args.max_input_cycle),
+                    "feature_set": args.feature_set,
+                    "model_set": args.model_set,
+                }
+            )
+        trace_rows_all.extend(trace_rows)
 
     if not summary_rows:
         raise ValueError("No valid group/model results. Check sample sizes per group.")
@@ -454,6 +626,11 @@ def main() -> None:
 
     pred_csv = out_dir / f"predictions__{args.target_mode}__{args.label_mode}__{mode_tag}.csv"
     pd.DataFrame(pred_rows_all).to_csv(pred_csv, index=False)
+
+    trace_csv: Optional[Path] = None
+    if trace_rows_all:
+        trace_csv = out_dir / f"stepwise_trace__{args.target_mode}__{args.label_mode}__{mode_tag}.csv"
+        pd.DataFrame(trace_rows_all).to_csv(trace_csv, index=False)
 
     run_meta = {
         "table_csv": str(args.table_csv),
@@ -471,6 +648,9 @@ def main() -> None:
         "models_include_list": include_models,
         "variance_top_n": int(args.variance_top_n),
         "custom_features": custom_features,
+        "stepwise_max_features": int(args.stepwise_max_features),
+        "stepwise_min_improvement": float(args.stepwise_min_improvement),
+        "stepwise_cv_splits": int(args.stepwise_cv_splits),
         "run_tag": args.run_tag,
     }
     meta_json = out_dir / f"run_meta__{args.target_mode}__{args.label_mode}__{mode_tag}.json"
@@ -478,6 +658,8 @@ def main() -> None:
 
     print(f"[INFO] Saved results: {res_csv}")
     print(f"[INFO] Saved predictions: {pred_csv}")
+    if trace_csv is not None:
+        print(f"[INFO] Saved stepwise trace: {trace_csv}")
     print(f"[INFO] Saved run meta: {meta_json}")
     print(res)
 

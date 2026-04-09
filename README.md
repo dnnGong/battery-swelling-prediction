@@ -231,13 +231,16 @@ This project now includes multiple scripts for swelling prediction modeling:
   - ECM outputs (`fit_result`, `fit_metrics`)
   - cycle/capacity/thickness/DCIR/ACIR/OCV data from raw xlsx
 - `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
-  with `Ridge + RandomForest + XGBoost(if installed)`.
+  with classic regressors including `Ridge`, `StepwiseLinear`, `RandomForest`,
+  and `XGBoost(if installed)`.
 - `src/train_swelling_deep.py`: train/evaluate grouped deep models (`MLP/CNN/LSTM`) with PyTorch.
 - `src/train_swelling_transformer.py`: train/evaluate grouped Transformer model with PyTorch.
 - `src/benchmark_models.py`: batch benchmark runner for `train_swelling_models.py`
   across multiple `model_set x feature_set` combinations.
 - `src/plot_feature_corr.py`: plot feature correlation matrix heatmap from `feature_table.csv`.
 - `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
+- `src/plot_stepwise_regression.py`: visualize `stepwise_trace__*.csv` as stepwise path, improvement bars,
+  and feature-entry heatmap.
 - `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
   row/cycle summaries including `EVTemp (C)` / `EVHum (%)`, with optional merge into `feature_table.csv`.
 - `src/filter_feature_table_outliers.py`: optional plug-in for outlier detection/removal on feature tables.
@@ -353,6 +356,24 @@ python src/train_swelling_models.py \
   --run_tag "extended_variance"
 ```
 
+To inspect feature-by-feature entry order with stepwise regression:
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results_stepwise" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --T 100 \
+  --max_input_cycle 50 \
+  --models StepwiseLinear \
+  --feature_set variance \
+  --variance_top_n 16 \
+  --stepwise_max_features 8 \
+  --stepwise_min_improvement 0.0001 \
+  --run_tag "stepwise_v1"
+```
+
 #### 2) Fixed cycle T, delta thickness
 
 ```bash
@@ -394,6 +415,7 @@ python src/train_swelling_models.py \
 ```text
 data/ml/results/results__<target_mode>__<label_mode>__<mode_tag>.csv
 data/ml/results/predictions__<target_mode>__<label_mode>__<mode_tag>.csv
+data/ml/results/stepwise_trace__<target_mode>__<label_mode>__<mode_tag>.csv
 data/ml/results/run_meta__<target_mode>__<label_mode>__<mode_tag>.json
 ```
 
@@ -402,10 +424,11 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 `train_swelling_models.py` supports:
 - `--model_set basic|extended|all`
   - `basic`: Ridge + RandomForest + XGBoost(if available)
-  - `extended`: basic + Dummy + Linear + PCR + PLSR + GaussianProcess
+  - `extended`: basic + Dummy + Linear + StepwiseLinear + PCR + PLSR + GaussianProcess
 - `--feature_set full|variance|discharge|ecm|custom`
 - `--variance_top_n` for `variance`
 - `--custom_features` for `custom`
+- `--stepwise_max_features`, `--stepwise_min_improvement`, `--stepwise_cv_splits` for `StepwiseLinear`
 - `--run_tag` to append a suffix in output file names
 
 ### Step B1: Batch Benchmark (Optional)
@@ -503,6 +526,7 @@ Each row is one model result under one group (`CL`/`FLC`/`HYCL`), with key field
 - `n_train`, `n_test`: sample counts in train/test split
 - `n_cells_train`, `n_cells_test`: unique cell counts in train/test
 - `n_features_used`: numeric feature count actually used in that group
+- `selected_features`: final selected feature list for models that do feature selection
 - `target_mode`, `label_mode`, `mode_tag`, `max_input_cycle`: run context
 
 #### `run_meta__*.json`
@@ -519,6 +543,7 @@ This is the run configuration and feature snapshot for reproducibility:
 - `test_size`: test split ratio (grouped by `cell_key`)
 - `feature_count`: number of features used
 - `feature_columns`: full feature column list used in training
+- `stepwise_*`: stepwise search configuration when `StepwiseLinear` is enabled
 
 #### `predictions__*.csv`
 
@@ -535,6 +560,33 @@ Each row is one test sample prediction, useful for direct comparison between pre
 - `y_pred`: predicted target value
 - `abs_error`: absolute prediction error
 - `target_mode`, `label_mode`, `mode_tag`, `max_input_cycle`: run context
+
+#### `stepwise_trace__*.csv`
+
+Each row is one accepted step from `StepwiseLinear`, useful for understanding
+what the model discovered incrementally:
+
+- `group_tag`: dataset group
+- `step`: selection order
+- `feature_name`: feature added at this step
+- `cv_mae`: train-only cross-validated MAE after adding this feature
+- `improvement`: CV-MAE gain versus previous step
+
+### Step B4: Visualize Stepwise Regression
+
+If you enabled `StepwiseLinear`, you can visualize the feature-entry process:
+
+```bash
+python src/plot_stepwise_regression.py \
+  --trace_csv "./data/ml3/compare_hycl/onedrive_allmodels/results_classic_stepwise/stepwise_trace__fixed_T__absolute__fixedT_100__stepwise_v1.csv" \
+  --out_png "./data/ml3/compare_hycl/onedrive_allmodels/results_classic_stepwise/stepwise_viz.png" \
+  --mode all
+```
+
+Outputs with `--mode all`:
+- `stepwise_viz__path.png`: CV-MAE vs step, annotated with feature names
+- `stepwise_viz__improvement.png`: per-step improvement bar chart
+- `stepwise_viz__heatmap.png`: feature entry-order heatmap across groups/models
 
 ### Step C: Plot Feature Correlation Matrices
 
