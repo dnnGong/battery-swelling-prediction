@@ -52,6 +52,23 @@ def pick_anchor_rows_fixed_T(df: pd.DataFrame, T: int, max_input_cycle: int) -> 
     return pd.DataFrame(out)
 
 
+def pick_rowwise_rows_current(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
+    """
+    Build one sample per row up to max_input_cycle, with target taken from the
+    same row's thickness values.
+
+    This mode keeps many cycle-level samples per cell while still relying on
+    grouped train/test splitting by cell_key to avoid leakage across cells.
+    """
+    sub = df[df["cycle_t"] <= max_input_cycle].copy()
+    if sub.empty:
+        return sub
+    sub["target_abs"] = sub["y_abs_thickness_t"].astype(float)
+    sub["target_delta"] = sub["y_delta_thickness_baseline_t"].astype(float)
+    sub["target_cycle"] = sub["cycle_t"].astype(int)
+    return sub
+
+
 def pick_rows_future_delta_TK(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
     """
     Use row at cycle t as input and future columns (t->t+K) as target.
@@ -485,6 +502,16 @@ def main() -> None:
     ap.add_argument("--T", type=int, default=100, help="Target cycle for fixed_T mode.")
     ap.add_argument("--max_input_cycle", type=int, default=50, help="Maximum cycle allowed in input features.")
     ap.add_argument("--future_k", type=int, default=20, help="Future horizon K for future_delta_TK mode.")
+    ap.add_argument(
+        "--sample_mode",
+        choices=["anchor", "rowwise"],
+        default="anchor",
+        help=(
+            "Sampling mode for fixed_T:\n"
+            "  anchor  : one sample per cell using the latest row up to max_input_cycle\n"
+            "  rowwise : one sample per row up to max_input_cycle, with same-row thickness as target"
+        ),
+    )
     ap.add_argument("--seed", type=int, default=42, help="Random seed for grouped train/test split and models.")
     ap.add_argument("--test_size", type=float, default=0.2, help="Test split ratio at the cell_key group level.")
     ap.add_argument("--min_rows_per_group", type=int, default=6, help="Minimum rows required to train one group.")
@@ -541,11 +568,16 @@ def main() -> None:
         raise ValueError("Input table is empty.")
 
     if args.target_mode == "fixed_T":
-        data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
+        if args.sample_mode == "anchor":
+            data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
+        else:
+            data = pick_rowwise_rows_current(df, max_input_cycle=args.max_input_cycle)
         mode_tag = f"fixedT_{args.T}"
     else:
         data = pick_rows_future_delta_TK(df, max_input_cycle=args.max_input_cycle)
         mode_tag = f"futureK_{args.future_k}"
+    if args.target_mode == "fixed_T" and args.sample_mode != "anchor":
+        mode_tag = f"{mode_tag}__{args.sample_mode}"
     if args.run_tag:
         mode_tag = f"{mode_tag}__{args.run_tag}"
 
@@ -605,6 +637,7 @@ def main() -> None:
                     "feature_count": int(len(feature_cols)),
                     "feature_set": args.feature_set,
                     "model_set": args.model_set,
+                    "sample_mode": args.sample_mode,
                 }
             )
         summary_rows.extend(recs)
@@ -618,6 +651,7 @@ def main() -> None:
                     "max_input_cycle": int(args.max_input_cycle),
                     "feature_set": args.feature_set,
                     "model_set": args.model_set,
+                    "sample_mode": args.sample_mode,
                 }
             )
         pred_rows_all.extend(pred_rows)
@@ -632,6 +666,7 @@ def main() -> None:
                     "max_input_cycle": int(args.max_input_cycle),
                     "feature_set": args.feature_set,
                     "model_set": args.model_set,
+                    "sample_mode": args.sample_mode,
                 }
             )
         trace_rows_all.extend(trace_rows)
@@ -660,6 +695,7 @@ def main() -> None:
         "T": int(args.T),
         "future_k": int(args.future_k),
         "max_input_cycle": int(args.max_input_cycle),
+        "sample_mode": args.sample_mode,
         "seed": int(args.seed),
         "test_size": float(args.test_size),
         "feature_count": int(len(feature_cols)),
