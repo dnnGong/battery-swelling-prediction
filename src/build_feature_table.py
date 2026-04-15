@@ -214,6 +214,26 @@ def build_rows_for_cell(
         for i, v in enumerate(params):
             row[f"feat_ecm_param_{i}"] = float(v)
 
+        # Add human-readable aliases for the common 2-CPE battery circuit.
+        # Current project mostly uses:
+        #   R0-p(R1,CPE1)-p(R2,CPE2)           -> 7 params
+        #   R0-p(R1,CPE1)-p(R2,CPE2)-W1/Wo1... -> Warburg tail appended
+        circuit_l = circuit.lower()
+        if circuit_l.startswith("r0-p(r1,cpe1)-p(r2,cpe2)") and len(params) >= 7:
+            row["feat_Rs_ohm"] = float(params[0])
+            row["feat_Rsei_ohm"] = float(params[1])
+            row["feat_Qsei"] = float(params[2])
+            row["feat_nsei"] = float(params[3])
+            row["feat_Rdl_ohm"] = float(params[4])
+            row["feat_Qdl"] = float(params[5])
+            row["feat_ndl"] = float(params[6])
+            row["feat_R_total_ohm"] = float(params[0] + params[1] + params[4])
+            # Semi-infinite or finite-length Warburg tail parameter(s), if present.
+            if len(params) >= 8:
+                row["feat_sigma"] = float(params[7])
+            if len(params) >= 9:
+                row["feat_warburg_tau"] = float(params[8])
+
         # Fit-quality metrics
         for k, v in (ecm_metrics or {}).items():
             if isinstance(v, (int, float)) and np.isfinite(v):

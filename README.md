@@ -428,6 +428,7 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 - `--feature_set full|variance|discharge|ecm|custom`
 - `--variance_top_n` for `variance`
 - `--custom_features` for `custom`
+- `--target_transform none|log` for optional log-transform on positive absolute targets
 - `--stepwise_max_features`, `--stepwise_min_improvement`, `--stepwise_cv_splits` for `StepwiseLinear`
 - `--run_tag` to append a suffix in output file names
 
@@ -536,6 +537,7 @@ This is the run configuration and feature snapshot for reproducibility:
 - `table_csv`: input feature table path
 - `target_mode`: `fixed_T` or `future_delta_TK`
 - `label_mode`: `absolute` or `delta`
+- `target_transform`: `none` or `log`
 - `T`: target cycle for `fixed_T`
 - `future_k`: K value for `future_delta_TK`
 - `max_input_cycle`: max cycle allowed for input features

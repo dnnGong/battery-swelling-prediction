@@ -336,6 +336,7 @@ def fit_eval_one_group(
     df_group: pd.DataFrame,
     feature_cols: List[str],
     label_col: str,
+    target_transform: str,
     seed: int,
     model_set: str,
     include_models: Optional[List[str]],
@@ -375,6 +376,12 @@ def fit_eval_one_group(
     X_te = te_df[valid_cols].to_numpy(dtype=float)
     y_tr = tr_df[label_col].to_numpy(dtype=float).reshape(-1)
     y_te = te_df[label_col].to_numpy(dtype=float).reshape(-1)
+    if target_transform == "log":
+        if np.any(y_tr <= 0) or np.any(y_te <= 0):
+            raise ValueError("target_transform=log requires strictly positive target values.")
+        y_tr_model = np.log(y_tr)
+    else:
+        y_tr_model = y_tr
 
     models = build_models(
         seed=seed,
@@ -385,8 +392,9 @@ def fit_eval_one_group(
         stepwise_cv_splits=stepwise_cv_splits,
     )
     for name, model in models.items():
-        model.fit(X_tr, y_tr)
-        pred = np.asarray(model.predict(X_te)).reshape(-1)
+        model.fit(X_tr, y_tr_model)
+        pred_model = np.asarray(model.predict(X_te)).reshape(-1)
+        pred = np.exp(pred_model) if target_transform == "log" else pred_model
         selected_features = ""
         if hasattr(model, "selected_idx_"):
             selected_idx = [int(i) for i in getattr(model, "selected_idx_", [])]
@@ -508,6 +516,12 @@ def main() -> None:
     )
     ap.add_argument("--variance_top_n", type=int, default=16, help="Top-N features for --feature_set variance.")
     ap.add_argument("--custom_features", default="", help="Comma list for --feature_set custom.")
+    ap.add_argument(
+        "--target_transform",
+        choices=["none", "log"],
+        default="none",
+        help="Optional target transform. 'log' is intended for positive absolute-thickness targets.",
+    )
     ap.add_argument("--stepwise_max_features", type=int, default=8, help="Maximum number of features for StepwiseLinear.")
     ap.add_argument(
         "--stepwise_min_improvement",
@@ -539,6 +553,8 @@ def main() -> None:
         raise ValueError("No training rows after target-mode filtering.")
 
     label_col = "target_abs" if args.label_mode == "absolute" else "target_delta"
+    if args.target_transform == "log" and args.label_mode != "absolute":
+        raise ValueError("target_transform=log is only supported with --label_mode absolute.")
 
     # Numeric feature columns only, prefixed by feat_.
     all_feature_cols = [
@@ -566,6 +582,7 @@ def main() -> None:
             df_group=dg,
             feature_cols=feature_cols,
             label_col=label_col,
+            target_transform=args.target_transform,
             seed=args.seed,
             model_set=args.model_set,
             include_models=include_models,
@@ -582,6 +599,7 @@ def main() -> None:
                     "group_tag": group,
                     "target_mode": args.target_mode,
                     "label_mode": args.label_mode,
+                    "target_transform": args.target_transform,
                     "mode_tag": mode_tag,
                     "max_input_cycle": int(args.max_input_cycle),
                     "feature_count": int(len(feature_cols)),
@@ -595,6 +613,7 @@ def main() -> None:
                 {
                     "target_mode": args.target_mode,
                     "label_mode": args.label_mode,
+                    "target_transform": args.target_transform,
                     "mode_tag": mode_tag,
                     "max_input_cycle": int(args.max_input_cycle),
                     "feature_set": args.feature_set,
@@ -608,6 +627,7 @@ def main() -> None:
                     "group_tag": group,
                     "target_mode": args.target_mode,
                     "label_mode": args.label_mode,
+                    "target_transform": args.target_transform,
                     "mode_tag": mode_tag,
                     "max_input_cycle": int(args.max_input_cycle),
                     "feature_set": args.feature_set,
@@ -636,6 +656,7 @@ def main() -> None:
         "table_csv": str(args.table_csv),
         "target_mode": args.target_mode,
         "label_mode": args.label_mode,
+        "target_transform": args.target_transform,
         "T": int(args.T),
         "future_k": int(args.future_k),
         "max_input_cycle": int(args.max_input_cycle),
