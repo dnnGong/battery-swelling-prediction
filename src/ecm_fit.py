@@ -33,6 +33,7 @@ import argparse
 import os
 import re
 import json
+import sys
 from typing import Optional, Tuple, List, Dict, Any
 from pathlib import Path
 
@@ -41,6 +42,30 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from impedance.models.circuits import CustomCircuit
+
+
+class TeeStream:
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self) -> None:
+        for s in self.streams:
+            s.flush()
+
+
+def setup_log_tee(log_file: str) -> None:
+    if not log_file:
+        return
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w", encoding="utf-8")
+    sys.stdout = TeeStream(sys.stdout, fh)
+    sys.stderr = TeeStream(sys.stderr, fh)
 
 
 # -----------------------------
@@ -502,6 +527,81 @@ def assign_block_ids(header_cells: List[str]) -> List[Optional[int]]:
 def idxs_in_block(block_ids: List[Optional[int]], block: int) -> List[int]:
     return [j for j, b in enumerate(block_ids) if b == block]
 
+
+def _first_nonempty(values: List[str]) -> str:
+    for v in values:
+        s = _clean_cell(v)
+        if s:
+            return s
+    return ""
+
+
+def _coerce_cycle_value(v) -> Optional[int]:
+    if pd.isna(v):
+        return None
+    s = _clean_cell(v)
+    if not s:
+        return None
+    m = re.search(r"(-?\d+)", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def extract_block_measurement_meta(
+    df_raw: pd.DataFrame,
+    header_row: int,
+    block: int,
+) -> Dict[str, Optional[object]]:
+    """
+    Extract measurement basis / cycle metadata for one EIS block.
+
+    In 03-4_EIS sheets we often see headers like:
+      - Series Basis
+      - Measurement Day or Cycle / Day/Cycle
+      - EIS Equipment ID
+      - Frequency (Hz)
+    """
+    if df_raw.empty or header_row >= len(df_raw):
+        return {"measurement_basis": None, "measurement_cycle": None}
+
+    header_cells = df_raw.iloc[header_row].astype(str).map(_clean_cell).tolist()
+    block_ids = assign_block_ids(header_cells)
+    cols_b = idxs_in_block(block_ids, block)
+    if not cols_b:
+        return {"measurement_basis": None, "measurement_cycle": None}
+
+    basis_col = None
+    cycle_col = None
+    for j in cols_b:
+        h = header_cells[j].lower()
+        if ("series basis" in h) or (h == "basis"):
+            basis_col = j
+        if ("measurement day or cycle" in h) or ("day/cycle" in h) or ("measurement cycle" in h):
+            cycle_col = j
+
+    measurement_basis = None
+    measurement_cycle = None
+    if basis_col is not None and header_row + 1 < len(df_raw):
+        vals = df_raw.iloc[header_row + 1 :, basis_col].tolist()
+        basis = _first_nonempty(vals)
+        measurement_basis = basis or None
+
+    if cycle_col is not None and header_row + 1 < len(df_raw):
+        vals = df_raw.iloc[header_row + 1 :, cycle_col].tolist()
+        for v in vals:
+            measurement_cycle = _coerce_cycle_value(v)
+            if measurement_cycle is not None:
+                break
+
+    return {
+        "measurement_basis": measurement_basis,
+        "measurement_cycle": measurement_cycle,
+    }
+
 def find_freq_col_in_block(header_cells: List[str], cols: List[int]) -> Optional[int]:
     for j in cols:
         if is_frequency_header(header_cells[j]):
@@ -846,7 +946,9 @@ def main():
     ap.add_argument("--weight_by_modulus", action="store_true", help="Use modulus weighting in nonlinear fit.")
     ap.add_argument("--merge_serial_plots", action="store_true", help="Merge all serial fit plots per xlsx into one comparison image.")
     ap.add_argument("--merge_cols", type=int, default=4, help="Column count in merged serial comparison image.")
+    ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
+    setup_log_tee(args.log_file)
 
     ensure_dir(args.out_dir)
     xlsx_files = collect_xlsx_files(args.xlsx, args.xlsx_dir, recursive=args.recursive)
@@ -905,6 +1007,11 @@ def main():
                 )
 
                 j_f, j_r, j_i = cols
+                meas_meta = extract_block_measurement_meta(
+                    df_raw=df_sheet,
+                    header_row=hdr,
+                    block=chosen_block,
+                )
                 print(f"[INFO] Header row used = {hdr}")
                 print(f"[INFO] chosen_block = {chosen_block} (requested={args.block})")
                 print(f"[INFO] Using RAW column indices: freq={j_f} | real={j_r} | imag={j_i}")
@@ -912,6 +1019,7 @@ def main():
                 print("[INFO] freq[:5] =", freq[:5])
                 print("[INFO] zre[:5]  =", zre[:5])
                 print("[INFO] zim[:5]  =", zim[:5])
+                print("[INFO] measurement basis/cycle =", meas_meta)
 
                 # 1) sort by frequency (important)
                 order = np.argsort(freq)
@@ -1011,6 +1119,8 @@ def main():
                     "group_tag": str(group_tag),
                     "serial": str(serial),
                     "sheet": str(sheet_used),
+                    "measurement_basis": meas_meta.get("measurement_basis"),
+                    "measurement_cycle": meas_meta.get("measurement_cycle"),
                     "chosen_block": int(chosen_block),
                     "raw_col_indices": {
                         "freq": int(j_f),

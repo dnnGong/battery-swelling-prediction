@@ -27,6 +27,30 @@ from src.cycle_plot import (
 )
 
 
+class TeeStream:
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self) -> None:
+        for s in self.streams:
+            s.flush()
+
+
+def setup_log_tee(log_file: str) -> None:
+    if not log_file:
+        return
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w", encoding="utf-8")
+    sys.stdout = TeeStream(sys.stdout, fh)
+    sys.stderr = TeeStream(sys.stderr, fh)
+
+
 def sanitize_filename(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
 
@@ -71,51 +95,106 @@ def slope_last_window(df: pd.DataFrame, x_col: str, y_col: str, t: float, window
         return float("nan")
 
 
-def load_best_ecm_results(ecm_dir: Path) -> Dict[Tuple[str, str], Dict]:
+def load_ecm_results_by_cell(ecm_dir: Path) -> Dict[Tuple[str, str], List[Dict]]:
     """
-    Index best ECM fit per (xlsx_file_name, serial) by smallest rmse.
-    Requires fit_result__*.json produced by src/ecm_fit.py.
+    Load all ECM fit results per (xlsx_file_name, serial), including optional
+    measurement_cycle metadata and the matching fit_metrics payload.
     """
-    idx: Dict[Tuple[str, str], Dict] = {}
+    idx: Dict[Tuple[str, str], List[Dict]] = {}
     for p in ecm_dir.rglob("fit_result__*.json"):
         try:
-            obj = json.loads(p.read_text(encoding="utf-8"))
-            key = (str(obj.get("file_name", "")), str(obj.get("serial", "")))
+            fit_result = json.loads(p.read_text(encoding="utf-8"))
+            key = (str(fit_result.get("file_name", "")), str(fit_result.get("serial", "")))
             if not key[0] or not key[1]:
                 continue
-            rmse = float(obj.get("rmse_complex_ohm", np.inf))
-            old = idx.get(key)
-            if old is None or rmse < float(old.get("rmse_complex_ohm", np.inf)):
-                idx[key] = obj
+
+            metrics = {}
+            metrics_path = p.with_name(p.name.replace("fit_result__", "fit_metrics__"))
+            if metrics_path.exists():
+                try:
+                    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+                except Exception:
+                    metrics = {}
+
+            rec = {
+                "fit_result": fit_result,
+                "fit_metrics": metrics,
+                "measurement_cycle": fit_result.get("measurement_cycle", None),
+                "sheet": str(fit_result.get("sheet", "")),
+                "rmse_complex_ohm": float(fit_result.get("rmse_complex_ohm", np.inf)),
+            }
+            idx.setdefault(key, []).append(rec)
         except Exception:
             continue
+
+    for key, recs in idx.items():
+        def sort_key(rec: Dict) -> Tuple[int, float]:
+            cycle = rec.get("measurement_cycle", None)
+            sheet = str(rec.get("sheet", "")).lower()
+            if cycle is not None and np.isfinite(cycle):
+                return (1, float(cycle))
+            if "preeis" in sheet:
+                return (0, -1.0)
+            if "posteis" in sheet:
+                return (2, np.inf)
+            return (3, np.inf)
+
+        recs.sort(key=sort_key)
     return idx
 
 
-def load_metrics_for_serial(ecm_dir: Path, file_name: str, serial: str) -> Dict[str, float]:
+def select_ecm_entry_for_cycle(ecm_entries: List[Dict], cycle_t: int) -> Tuple[Dict, Dict]:
     """
-    Find the best metrics json for (file_name, serial) by lowest rmse_complex_ohm.
-    """
-    candidates = []
-    file_stem = sanitize_filename(Path(file_name).stem)
-    for p in ecm_dir.rglob(f"{file_stem}/{sanitize_filename(serial)}/fit_metrics__*.json"):
-        candidates.append(p)
-    if not candidates:
-        for p in ecm_dir.rglob(f"{sanitize_filename(serial)}/fit_metrics__*.json"):
-            candidates.append(p)
+    Choose the ECM record that best matches the current cycle.
 
-    best = None
-    best_rmse = np.inf
-    for p in candidates:
-        try:
-            obj = json.loads(p.read_text(encoding="utf-8"))
-            rmse = float(obj.get("rmse_complex_ohm", np.inf))
-            if rmse < best_rmse:
-                best = obj
-                best_rmse = rmse
-        except Exception:
-            pass
-    return best or {}
+    Preference:
+    1. latest measurement_cycle <= cycle_t
+    2. earliest measurement_cycle > cycle_t
+    3. PreEIS fallback
+    4. lowest-rmse fallback among remaining records
+    """
+    if not ecm_entries:
+        return {}, {}
+
+    cycle_entries = []
+    pre_entries = []
+    other_entries = []
+    for rec in ecm_entries:
+        fit_result = rec.get("fit_result", {})
+        fit_metrics = rec.get("fit_metrics", {})
+        cyc = fit_result.get("measurement_cycle", None)
+        sheet = str(fit_result.get("sheet", "")).lower()
+        if cyc is not None and np.isfinite(cyc):
+            cycle_entries.append((int(cyc), fit_result, fit_metrics))
+        elif "preeis" in sheet:
+            pre_entries.append((fit_result, fit_metrics))
+        else:
+            other_entries.append((fit_result, fit_metrics))
+
+    if cycle_entries:
+        cycle_entries.sort(key=lambda x: x[0])
+        le = [x for x in cycle_entries if x[0] <= cycle_t]
+        if le:
+            _, fit_result, fit_metrics = le[-1]
+            return fit_result, fit_metrics
+        _, fit_result, fit_metrics = cycle_entries[0]
+        return fit_result, fit_metrics
+
+    if pre_entries:
+        fit_result, fit_metrics = min(
+            pre_entries,
+            key=lambda x: float(x[0].get("rmse_complex_ohm", np.inf)),
+        )
+        return fit_result, fit_metrics
+
+    if other_entries:
+        fit_result, fit_metrics = min(
+            other_entries,
+            key=lambda x: float(x[0].get("rmse_complex_ohm", np.inf)),
+        )
+        return fit_result, fit_metrics
+
+    return {}, {}
 
 
 def select_soc_slice(dcir: pd.DataFrame, soc_target: float, tol: float = 5.0) -> pd.DataFrame:
@@ -172,8 +251,7 @@ def build_rows_for_cell(
     cyc: pd.DataFrame,
     cm: pd.DataFrame,
     dcir: pd.DataFrame,
-    ecm_result: Dict,
-    ecm_metrics: Dict,
+    ecm_entries: List[Dict],
     min_cycle: int,
     max_cycle: int,
     future_k: int,
@@ -196,14 +274,6 @@ def build_rows_for_cell(
 
     dcir_s = select_soc_slice(dcir, soc_target=soc_target)
 
-    ecm_fit_ok = is_ecm_fit_usable(ecm_result, ecm_metrics)
-    ecm_result_use = ecm_result if ecm_fit_ok else {}
-    ecm_metrics_use = ecm_metrics if ecm_fit_ok else {}
-
-    # ECM params from fit result
-    params = ecm_result_use.get("params", []) if ecm_result_use else []
-    circuit = str(ecm_result_use.get("circuit", "")) if ecm_result_use else ""
-
     for t in cycles_t:
         thk_t = numeric_last_le(cm2, "cycle_actual", "thickness2_mm", float(t))
         if not np.isfinite(thk_t):
@@ -211,6 +281,13 @@ def build_rows_for_cell(
 
         thk_tk = numeric_last_le(cm2, "cycle_actual", "thickness2_mm", float(t + future_k))
         has_future = np.isfinite(thk_tk) and (t + future_k > t)
+
+        ecm_result, ecm_metrics = select_ecm_entry_for_cycle(ecm_entries, t)
+        ecm_fit_ok = is_ecm_fit_usable(ecm_result, ecm_metrics)
+        ecm_result_use = ecm_result if ecm_fit_ok else {}
+        ecm_metrics_use = ecm_metrics if ecm_fit_ok else {}
+        params = ecm_result_use.get("params", []) if ecm_result_use else []
+        circuit = str(ecm_result_use.get("circuit", "")) if ecm_result_use else ""
 
         row = {
             "file_name": file_name,
@@ -244,6 +321,7 @@ def build_rows_for_cell(
             "feat_dcir_soc_t": numeric_last_le(dcir_s, "cycle_target", "dcir_mohm", float(t)),
             "feat_dcir_soc_slope_10": slope_last_window(dcir_s, "cycle_target", "dcir_mohm", float(t), window=10),
             "feat_ecm_fit_ok": float(ecm_fit_ok),
+            "feat_ecm_measurement_cycle": float(ecm_result_use.get("measurement_cycle", np.nan)) if ecm_result_use else float("nan"),
         }
 
         # ECM feature block
@@ -290,7 +368,7 @@ def build_table(
     future_k: int,
     soc_target: float,
 ) -> pd.DataFrame:
-    ecm_idx = load_best_ecm_results(ecm_dir)
+    ecm_idx = load_ecm_results_by_cell(ecm_dir)
     all_rows: List[Dict] = []
 
     xlsx_files = sorted(xlsx_dir.rglob("*.xlsx"))
@@ -321,8 +399,7 @@ def build_table(
                 continue
 
             ecm_key = (file_name, serial)
-            ecm_result = ecm_idx.get(ecm_key, {})
-            ecm_metrics = load_metrics_for_serial(ecm_dir, file_name=file_name, serial=serial)
+            ecm_entries = ecm_idx.get(ecm_key, [])
 
             rows = build_rows_for_cell(
                 file_name=file_name,
@@ -332,8 +409,7 @@ def build_table(
                 cyc=cyc,
                 cm=cm,
                 dcir=dcir,
-                ecm_result=ecm_result,
-                ecm_metrics=ecm_metrics,
+                ecm_entries=ecm_entries,
                 min_cycle=min_cycle,
                 max_cycle=max_cycle,
                 future_k=future_k,
@@ -380,7 +456,9 @@ def main() -> None:
     ap.add_argument("--max_cycle", type=int, default=200, help="Maximum cycle to keep when building samples.")
     ap.add_argument("--future_k", type=int, default=20, help="Future horizon K used for y_future_* target columns.")
     ap.add_argument("--soc_target", type=float, default=50.0, help="SOC target used to select the DCIR feature slice.")
+    ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
+    setup_log_tee(args.log_file)
 
     out_csv = Path(args.out_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)

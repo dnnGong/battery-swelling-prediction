@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,30 @@ except Exception:  # pragma: no cover
 
     class RegressorMixin:  # type: ignore[no-redef]
         pass
+
+
+class TeeStream:
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self) -> None:
+        for s in self.streams:
+            s.flush()
+
+
+def setup_log_tee(log_file: str) -> None:
+    if not log_file:
+        return
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w", encoding="utf-8")
+    sys.stdout = TeeStream(sys.stdout, fh)
+    sys.stderr = TeeStream(sys.stderr, fh)
 
 
 def safe_rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -558,7 +583,9 @@ def main() -> None:
     )
     ap.add_argument("--stepwise_cv_splits", type=int, default=5, help="K-fold splits used by StepwiseLinear on train data.")
     ap.add_argument("--run_tag", default="", help="Optional suffix tag appended to mode_tag in output file names.")
+    ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
+    setup_log_tee(args.log_file)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
