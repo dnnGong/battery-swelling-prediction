@@ -131,6 +131,39 @@ def select_soc_slice(dcir: pd.DataFrame, soc_target: float, tol: float = 5.0) ->
     return near
 
 
+def is_ecm_fit_usable(ecm_result: Dict, ecm_metrics: Dict) -> bool:
+    """
+    Minimal bad-fit filter for ECM-derived features.
+
+    The goal is not to perfectly score every fit, but to block clearly failed
+    fits from entering the ML table as giant, destabilizing outliers.
+    """
+    if not ecm_result:
+        return False
+
+    rmse_complex = float(ecm_result.get("rmse_complex_ohm", np.nan))
+    if not np.isfinite(rmse_complex):
+        return False
+
+    # Hard fail for obviously broken fits. Good fits in this project are
+    # usually orders of magnitude smaller than this.
+    if rmse_complex > 1.0:
+        return False
+
+    nrmse_pct = float(ecm_metrics.get("nrmse_complex_percent_of_mean_absZ", np.nan)) if ecm_metrics else float("nan")
+    if np.isfinite(nrmse_pct) and nrmse_pct > 50.0:
+        return False
+
+    r2_real = float(ecm_metrics.get("r2_real", np.nan)) if ecm_metrics else float("nan")
+    r2_imag = float(ecm_metrics.get("r2_imag", np.nan)) if ecm_metrics else float("nan")
+    if np.isfinite(r2_real) and r2_real < 0.0:
+        return False
+    if np.isfinite(r2_imag) and r2_imag < 0.0:
+        return False
+
+    return True
+
+
 def build_rows_for_cell(
     file_name: str,
     xlsx_stem: str,
@@ -163,9 +196,13 @@ def build_rows_for_cell(
 
     dcir_s = select_soc_slice(dcir, soc_target=soc_target)
 
+    ecm_fit_ok = is_ecm_fit_usable(ecm_result, ecm_metrics)
+    ecm_result_use = ecm_result if ecm_fit_ok else {}
+    ecm_metrics_use = ecm_metrics if ecm_fit_ok else {}
+
     # ECM params from fit result
-    params = ecm_result.get("params", []) if ecm_result else []
-    circuit = str(ecm_result.get("circuit", "")) if ecm_result else ""
+    params = ecm_result_use.get("params", []) if ecm_result_use else []
+    circuit = str(ecm_result_use.get("circuit", "")) if ecm_result_use else ""
 
     for t in cycles_t:
         thk_t = numeric_last_le(cm2, "cycle_actual", "thickness2_mm", float(t))
@@ -206,10 +243,11 @@ def build_rows_for_cell(
             "feat_capacity_slope_10": slope_last_window(cyc, "cycle", "discharge_capacity_mAh", float(t), window=10),
             "feat_dcir_soc_t": numeric_last_le(dcir_s, "cycle_target", "dcir_mohm", float(t)),
             "feat_dcir_soc_slope_10": slope_last_window(dcir_s, "cycle_target", "dcir_mohm", float(t), window=10),
+            "feat_ecm_fit_ok": float(ecm_fit_ok),
         }
 
         # ECM feature block
-        row["feat_ecm_rmse_complex_ohm"] = float(ecm_result.get("rmse_complex_ohm", np.nan)) if ecm_result else float("nan")
+        row["feat_ecm_rmse_complex_ohm"] = float(ecm_result_use.get("rmse_complex_ohm", np.nan)) if ecm_result_use else float("nan")
         row["feat_ecm_circuit"] = circuit
         for i, v in enumerate(params):
             row[f"feat_ecm_param_{i}"] = float(v)
@@ -235,7 +273,7 @@ def build_rows_for_cell(
                 row["feat_warburg_tau"] = float(params[8])
 
         # Fit-quality metrics
-        for k, v in (ecm_metrics or {}).items():
+        for k, v in (ecm_metrics_use or {}).items():
             if isinstance(v, (int, float)) and np.isfinite(v):
                 row[f"feat_fit_{k}"] = float(v)
 
