@@ -321,7 +321,11 @@ def build_rows_for_cell(
             "feat_dcir_soc_t": numeric_last_le(dcir_s, "cycle_target", "dcir_mohm", float(t)),
             "feat_dcir_soc_slope_10": slope_last_window(dcir_s, "cycle_target", "dcir_mohm", float(t), window=10),
             "feat_ecm_fit_ok": float(ecm_fit_ok),
-            "feat_ecm_measurement_cycle": float(ecm_result_use.get("measurement_cycle", np.nan)) if ecm_result_use else float("nan"),
+            "feat_ecm_measurement_cycle": (
+                float(ecm_result_use["measurement_cycle"])
+                if ecm_result_use and ecm_result_use.get("measurement_cycle") is not None
+                else float("nan")
+            ),
         }
 
         # ECM feature block
