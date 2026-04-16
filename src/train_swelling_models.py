@@ -257,6 +257,14 @@ def build_models(
     stepwise_max_features: int = 8,
     stepwise_min_improvement: float = 1e-4,
     stepwise_cv_splits: int = 5,
+    xgb_n_estimators: int = 600,
+    xgb_max_depth: int = 6,
+    xgb_learning_rate: float = 0.03,
+    xgb_subsample: float = 0.9,
+    xgb_colsample_bytree: float = 0.9,
+    xgb_min_child_weight: float = 1.0,
+    xgb_reg_alpha: float = 0.0,
+    xgb_reg_lambda: float = 1.0,
 ) -> Dict[str, object]:
     try:
         from sklearn.linear_model import LinearRegression, Ridge
@@ -305,12 +313,14 @@ def build_models(
         from xgboost import XGBRegressor
 
         registry["XGBoost"] = XGBRegressor(
-            n_estimators=600,
-            max_depth=6,
-            learning_rate=0.03,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            reg_lambda=1.0,
+            n_estimators=xgb_n_estimators,
+            max_depth=xgb_max_depth,
+            learning_rate=xgb_learning_rate,
+            subsample=xgb_subsample,
+            colsample_bytree=xgb_colsample_bytree,
+            min_child_weight=xgb_min_child_weight,
+            reg_alpha=xgb_reg_alpha,
+            reg_lambda=xgb_reg_lambda,
             random_state=seed,
             n_jobs=4,
             objective="reg:squarederror",
@@ -388,6 +398,14 @@ def fit_eval_one_group(
     stepwise_max_features: int,
     stepwise_min_improvement: float,
     stepwise_cv_splits: int,
+    xgb_n_estimators: int,
+    xgb_max_depth: int,
+    xgb_learning_rate: float,
+    xgb_subsample: float,
+    xgb_colsample_bytree: float,
+    xgb_min_child_weight: float,
+    xgb_reg_alpha: float,
+    xgb_reg_lambda: float,
 ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     records: List[Dict] = []
     pred_rows: List[Dict] = []
@@ -432,6 +450,14 @@ def fit_eval_one_group(
         stepwise_max_features=stepwise_max_features,
         stepwise_min_improvement=stepwise_min_improvement,
         stepwise_cv_splits=stepwise_cv_splits,
+        xgb_n_estimators=xgb_n_estimators,
+        xgb_max_depth=xgb_max_depth,
+        xgb_learning_rate=xgb_learning_rate,
+        xgb_subsample=xgb_subsample,
+        xgb_colsample_bytree=xgb_colsample_bytree,
+        xgb_min_child_weight=xgb_min_child_weight,
+        xgb_reg_alpha=xgb_reg_alpha,
+        xgb_reg_lambda=xgb_reg_lambda,
     )
     for name, model in models.items():
         model.fit(X_tr, y_tr_model)
@@ -582,6 +608,14 @@ def main() -> None:
         help="Minimum CV-MAE improvement required to accept the next stepwise feature.",
     )
     ap.add_argument("--stepwise_cv_splits", type=int, default=5, help="K-fold splits used by StepwiseLinear on train data.")
+    ap.add_argument("--xgb_n_estimators", type=int, default=600, help="XGBoost n_estimators.")
+    ap.add_argument("--xgb_max_depth", type=int, default=6, help="XGBoost max_depth.")
+    ap.add_argument("--xgb_learning_rate", type=float, default=0.03, help="XGBoost learning_rate.")
+    ap.add_argument("--xgb_subsample", type=float, default=0.9, help="XGBoost subsample.")
+    ap.add_argument("--xgb_colsample_bytree", type=float, default=0.9, help="XGBoost colsample_bytree.")
+    ap.add_argument("--xgb_min_child_weight", type=float, default=1.0, help="XGBoost min_child_weight.")
+    ap.add_argument("--xgb_reg_alpha", type=float, default=0.0, help="XGBoost reg_alpha.")
+    ap.add_argument("--xgb_reg_lambda", type=float, default=1.0, help="XGBoost reg_lambda.")
     ap.add_argument("--run_tag", default="", help="Optional suffix tag appended to mode_tag in output file names.")
     ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
@@ -651,6 +685,14 @@ def main() -> None:
             stepwise_max_features=args.stepwise_max_features,
             stepwise_min_improvement=args.stepwise_min_improvement,
             stepwise_cv_splits=args.stepwise_cv_splits,
+            xgb_n_estimators=args.xgb_n_estimators,
+            xgb_max_depth=args.xgb_max_depth,
+            xgb_learning_rate=args.xgb_learning_rate,
+            xgb_subsample=args.xgb_subsample,
+            xgb_colsample_bytree=args.xgb_colsample_bytree,
+            xgb_min_child_weight=args.xgb_min_child_weight,
+            xgb_reg_alpha=args.xgb_reg_alpha,
+            xgb_reg_lambda=args.xgb_reg_lambda,
         )
         for r in recs:
             r.update(
@@ -735,6 +777,14 @@ def main() -> None:
         "stepwise_max_features": int(args.stepwise_max_features),
         "stepwise_min_improvement": float(args.stepwise_min_improvement),
         "stepwise_cv_splits": int(args.stepwise_cv_splits),
+        "xgb_n_estimators": int(args.xgb_n_estimators),
+        "xgb_max_depth": int(args.xgb_max_depth),
+        "xgb_learning_rate": float(args.xgb_learning_rate),
+        "xgb_subsample": float(args.xgb_subsample),
+        "xgb_colsample_bytree": float(args.xgb_colsample_bytree),
+        "xgb_min_child_weight": float(args.xgb_min_child_weight),
+        "xgb_reg_alpha": float(args.xgb_reg_alpha),
+        "xgb_reg_lambda": float(args.xgb_reg_lambda),
         "run_tag": args.run_tag,
     }
     meta_json = out_dir / f"run_meta__{args.target_mode}__{args.label_mode}__{mode_tag}.json"
