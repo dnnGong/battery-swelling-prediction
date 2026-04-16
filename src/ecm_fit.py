@@ -89,6 +89,22 @@ def to_float_series(s: pd.Series) -> pd.Series:
 def sanitize_filename(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]+", "_", s)
 
+
+def has_existing_serial_fit(serial_out_dir: str, sheet_used: str) -> bool:
+    pattern = f"fit_result__{sanitize_filename(str(sheet_used))}__block*.json"
+    return any(Path(serial_out_dir).glob(pattern))
+
+
+def has_existing_block_fit(serial_out_dir: str, sheet_used: str, block: int) -> bool:
+    path = Path(serial_out_dir) / f"fit_result__{sanitize_filename(str(sheet_used))}__block{block}.json"
+    return path.exists()
+
+
+def append_progress_record(out_dir: str, record: Dict[str, Any]) -> None:
+    path = Path(out_dir) / "ecm_progress.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=True) + "\n")
+
 def detect_serials(df_raw: pd.DataFrame, serial_row_idx: int = 1) -> List[str]:
     """
     Detect serial numbers from the repeated-serial row in wide tables.
@@ -528,6 +544,31 @@ def idxs_in_block(block_ids: List[Optional[int]], block: int) -> List[int]:
     return [j for j, b in enumerate(block_ids) if b == block]
 
 
+def candidate_blocks_for_serial(
+    df_raw: pd.DataFrame,
+    header_row: int,
+    serial_col_range: Optional[Tuple[int, int]] = None,
+) -> List[int]:
+    header_cells = df_raw.iloc[header_row].astype(str).map(_clean_cell).tolist()
+    block_ids = assign_block_ids(header_cells)
+    max_block = max([b for b in block_ids if b is not None], default=-1)
+    if max_block < 0:
+        return []
+
+    out: List[int] = []
+    for b in range(max_block + 1):
+        cols_b = idxs_in_block(block_ids, b)
+        j_f = find_freq_col_in_block(header_cells, cols_b)
+        if j_f is None:
+            continue
+        if serial_col_range is not None:
+            c0, c1 = serial_col_range
+            if not (c0 <= j_f < c1):
+                continue
+        out.append(int(b))
+    return out
+
+
 def _first_nonempty(values: List[str]) -> str:
     for v in values:
         s = _clean_cell(v)
@@ -798,6 +839,7 @@ def load_eis_with_rescue_and_fallback(
     min_points: int,
     assume_mohm: bool,
     serial_col_range: Optional[Tuple[int, int]] = None,
+    search_all_blocks: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, Tuple[int,int,int], int]:
     df_raw = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None, engine="openpyxl")
     if df_raw.empty:
@@ -874,9 +916,10 @@ def load_eis_with_rescue_and_fallback(
 
     # Try requested first, then all
     try_block(requested_block)
-    for b in range(max_block + 1):
-        if b != requested_block:
-            try_block(b)
+    if search_all_blocks:
+        for b in range(max_block + 1):
+            if b != requested_block:
+                try_block(b)
 
     if best is None or best_joint < min_points:
         raise ValueError(
@@ -922,6 +965,16 @@ def main():
     ap.add_argument("--xlsx_dir", required=False, help="Directory containing xlsx files. Mutually exclusive with --xlsx.")
     ap.add_argument("--recursive", action="store_true", help="Recursively scan --xlsx_dir for *.xlsx files.")
     ap.add_argument("--sheet", default="02_PreEIS", help="Sheet name to use, or 'auto' to detect from common EIS sheet names.")
+    ap.add_argument(
+        "--fit_mode",
+        choices=["best_block", "all_valid_blocks"],
+        default="best_block",
+        help=(
+            "Block fitting mode:\n"
+            "  best_block       : keep existing behavior, one best/fallback block per serial\n"
+            "  all_valid_blocks : fit all candidate EIS blocks within each serial range separately"
+        ),
+    )
     ap.add_argument("--soc", type=int, default=50, help="Kept for CLI compatibility; rescue logic does not rely on SOC header.")
     ap.add_argument("--block", type=int, default=2, help="Preferred serial block index. Script may fall back to a better block.")
     ap.add_argument("--header", type=int, default=None, help="Optional header row override.")
@@ -946,6 +999,16 @@ def main():
     ap.add_argument("--weight_by_modulus", action="store_true", help="Use modulus weighting in nonlinear fit.")
     ap.add_argument("--merge_serial_plots", action="store_true", help="Merge all serial fit plots per xlsx into one comparison image.")
     ap.add_argument("--merge_cols", type=int, default=4, help="Column count in merged serial comparison image.")
+    ap.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip serials that already have a fit_result for the current sheet in out_dir.",
+    )
+    ap.add_argument(
+        "--overwrite_existing",
+        action="store_true",
+        help="Force re-fit even if outputs already exist for a serial/sheet.",
+    )
     ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
     setup_log_tee(args.log_file)
@@ -954,8 +1017,62 @@ def main():
     xlsx_files = collect_xlsx_files(args.xlsx, args.xlsx_dir, recursive=args.recursive)
     print(f"[INFO] Found {len(xlsx_files)} xlsx file(s) to process.")
 
+    planned_tasks: List[Dict[str, Any]] = []
+    for xlsx_path in xlsx_files:
+        try:
+            sheet_used = resolve_sheet_name(Path(xlsx_path), args.sheet)
+            if sheet_used is None:
+                continue
+            df_sheet = pd.read_excel(xlsx_path, sheet_name=sheet_used, header=None, engine="openpyxl")
+            serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=1)
+            if not serial_blocks:
+                serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=0)
+            if not serial_blocks:
+                serial_blocks = detect_serial_blocks(df_sheet, serial_row_idx=2)
+            if not serial_blocks:
+                serial_blocks = [(detect_primary_serial(df_sheet), 0, df_sheet.shape[1])]
+            if args.serial:
+                serial_blocks = [x for x in serial_blocks if x[0] == args.serial]
+            header_row_plan = args.header
+            if header_row_plan is None:
+                header_row_plan = find_best_header_row(df_sheet, ["frequency", "real", "imag", "soc"], scan_rows=200)
+                if header_row_plan is None:
+                    header_row_plan = find_best_header_row(df_sheet, ["frequency", "real", "imag"], scan_rows=200)
+            if header_row_plan is None:
+                continue
+
+            for serial, c0, c1 in serial_blocks:
+                if args.fit_mode == "all_valid_blocks":
+                    blocks = candidate_blocks_for_serial(df_sheet, header_row_plan, serial_col_range=(c0, c1))
+                    for b in blocks:
+                        planned_tasks.append(
+                            {
+                                "xlsx_path": str(xlsx_path),
+                                "sheet_used": str(sheet_used),
+                                "serial": str(serial),
+                                "col_range": (int(c0), int(c1)),
+                                "requested_block": int(b),
+                            }
+                        )
+                else:
+                    planned_tasks.append(
+                        {
+                            "xlsx_path": str(xlsx_path),
+                            "sheet_used": str(sheet_used),
+                            "serial": str(serial),
+                            "col_range": (int(c0), int(c1)),
+                            "requested_block": int(args.block),
+                        }
+                    )
+        except Exception:
+            continue
+
+    total_tasks = len(planned_tasks)
+    print(f"[INFO] Planned ECM fit tasks: {total_tasks} (fit_mode={args.fit_mode})")
+
     ok_cnt = 0
     fail_cnt = 0
+    done_cnt = 0
 
     for xlsx_path in xlsx_files:
         try:
@@ -993,173 +1110,258 @@ def main():
             try:
                 serial_out_dir = os.path.join(str(file_out_dir), sanitize_filename(serial))
                 ensure_dir(serial_out_dir)
-                print(f"\n[INFO] Processing serial={serial} cols=[{c0},{c1})")
 
-                freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
-                    xlsx_path=str(xlsx_path),
-                    sheet_name=sheet_used,
-                    requested_block=args.block,
-                    header_row=args.header,
-                    imag_is_negative=args.imag_is_negative,
-                    min_points=args.min_points,
-                    assume_mohm=args.assume_mohm,
-                    serial_col_range=(c0, c1),
-                )
+                if args.overwrite_existing and args.skip_existing:
+                    raise ValueError("Use only one of --skip_existing or --overwrite_existing.")
 
-                j_f, j_r, j_i = cols
-                meas_meta = extract_block_measurement_meta(
-                    df_raw=df_sheet,
-                    header_row=hdr,
-                    block=chosen_block,
-                )
-                print(f"[INFO] Header row used = {hdr}")
-                print(f"[INFO] chosen_block = {chosen_block} (requested={args.block})")
-                print(f"[INFO] Using RAW column indices: freq={j_f} | real={j_r} | imag={j_i}")
-                print(f"[INFO] Valid rows N = {len(freq)}")
-                print("[INFO] freq[:5] =", freq[:5])
-                print("[INFO] zre[:5]  =", zre[:5])
-                print("[INFO] zim[:5]  =", zim[:5])
-                print("[INFO] measurement basis/cycle =", meas_meta)
+                block_requests: List[int]
+                if args.fit_mode == "all_valid_blocks":
+                    header_row_tmp = args.header
+                    if header_row_tmp is None:
+                        header_row_tmp = find_best_header_row(df_sheet, ["frequency", "real", "imag", "soc"], scan_rows=200)
+                        if header_row_tmp is None:
+                            header_row_tmp = find_best_header_row(df_sheet, ["frequency", "real", "imag"], scan_rows=200)
+                    if header_row_tmp is None:
+                        raise ValueError("Cannot auto-detect header row for all_valid_blocks mode.")
+                    block_requests = candidate_blocks_for_serial(df_sheet, header_row_tmp, serial_col_range=(c0, c1))
+                else:
+                    block_requests = [int(args.block)]
 
-                # 1) sort by frequency (important)
-                order = np.argsort(freq)
-                freq = freq[order]
-                zre = zre[order]
-                zim = zim[order]
+                for requested_block in block_requests:
+                    if args.fit_mode == "all_valid_blocks":
+                        if args.skip_existing and has_existing_block_fit(serial_out_dir, sheet_used, requested_block):
+                            done_cnt += 1
+                            print(f"[INFO] [{done_cnt}/{total_tasks}] Skipping serial={serial} block={requested_block} because existing fit_result was found")
+                            append_progress_record(
+                                args.out_dir,
+                                {
+                                    "file_name": str(xlsx_path.name),
+                                    "group_tag": str(group_tag),
+                                    "serial": str(serial),
+                                    "sheet": str(sheet_used),
+                                    "requested_block": int(requested_block),
+                                    "status": "skipped_existing",
+                                },
+                            )
+                            continue
+                    else:
+                        if args.skip_existing and has_existing_serial_fit(serial_out_dir, sheet_used):
+                            done_cnt += 1
+                            print(f"[INFO] [{done_cnt}/{total_tasks}] Skipping serial={serial} because existing fit_result was found for sheet={sheet_used}")
+                            append_progress_record(
+                                args.out_dir,
+                                {
+                                    "file_name": str(xlsx_path.name),
+                                    "group_tag": str(group_tag),
+                                    "serial": str(serial),
+                                    "sheet": str(sheet_used),
+                                    "requested_block": int(requested_block),
+                                    "status": "skipped_existing",
+                                },
+                            )
+                            continue
+
+                    print(f"\n[INFO] [{done_cnt + 1}/{total_tasks}] Processing serial={serial} cols=[{c0},{c1}) requested_block={requested_block}")
+
+                    freq, zre, zim, chosen_block, cols, hdr = load_eis_with_rescue_and_fallback(
+                        xlsx_path=str(xlsx_path),
+                        sheet_name=sheet_used,
+                        requested_block=requested_block,
+                        header_row=args.header,
+                        imag_is_negative=args.imag_is_negative,
+                        min_points=args.min_points,
+                        assume_mohm=args.assume_mohm,
+                        serial_col_range=(c0, c1),
+                        search_all_blocks=(args.fit_mode == "best_block"),
+                    )
+
+                    j_f, j_r, j_i = cols
+                    meas_meta = extract_block_measurement_meta(
+                        df_raw=df_sheet,
+                        header_row=hdr,
+                        block=chosen_block,
+                    )
+                    print(f"[INFO] Header row used = {hdr}")
+                    print(f"[INFO] chosen_block = {chosen_block} (requested={requested_block})")
+                    print(f"[INFO] Using RAW column indices: freq={j_f} | real={j_r} | imag={j_i}")
+                    print(f"[INFO] Valid rows N = {len(freq)}")
+                    print("[INFO] freq[:5] =", freq[:5])
+                    print("[INFO] zre[:5]  =", zre[:5])
+                    print("[INFO] zim[:5]  =", zim[:5])
+                    print("[INFO] measurement basis/cycle =", meas_meta)
+
+                    # 1) sort by frequency (important)
+                    order = np.argsort(freq)
+                    freq = freq[order]
+                    zre = zre[order]
+                    zim = zim[order]
 
                 # 2) optional frequency window filtering
-                if args.fmin is not None:
-                    m = freq >= args.fmin
-                    freq, zre, zim = freq[m], zre[m], zim[m]
-                if args.fmax is not None:
-                    m = freq <= args.fmax
-                    freq, zre, zim = freq[m], zre[m], zim[m]
-                if len(freq) < args.min_points:
-                    raise ValueError(f"Too few points after fmin/fmax filtering: {len(freq)}")
+                    if args.fmin is not None:
+                        m = freq >= args.fmin
+                        freq, zre, zim = freq[m], zre[m], zim[m]
+                    if args.fmax is not None:
+                        m = freq <= args.fmax
+                        freq, zre, zim = freq[m], zre[m], zim[m]
+                    if len(freq) < args.min_points:
+                        raise ValueError(f"Too few points after fmin/fmax filtering: {len(freq)}")
 
                 # 3) drop highest-frequency outliers if requested
-                if args.drop_first_n > 0:
-                    od = np.argsort(-freq)  # high -> low
-                    fd, rd, id_ = freq[od], zre[od], zim[od]
-                    fd, rd, id_ = fd[args.drop_first_n:], rd[args.drop_first_n:], id_[args.drop_first_n:]
-                    oa = np.argsort(fd)
-                    freq, zre, zim = fd[oa], rd[oa], id_[oa]
-                    if len(freq) < args.min_points:
-                        raise ValueError(f"Too few points after drop_first_n={args.drop_first_n}: {len(freq)}")
+                    if args.drop_first_n > 0:
+                        od = np.argsort(-freq)  # high -> low
+                        fd, rd, id_ = freq[od], zre[od], zim[od]
+                        fd, rd, id_ = fd[args.drop_first_n:], rd[args.drop_first_n:], id_[args.drop_first_n:]
+                        oa = np.argsort(fd)
+                        freq, zre, zim = fd[oa], rd[oa], id_[oa]
+                        if len(freq) < args.min_points:
+                            raise ValueError(f"Too few points after drop_first_n={args.drop_first_n}: {len(freq)}")
 
                 # 4) choose imag sign for Nyquist consistency
-                if args.auto_sign:
-                    z1 = zre + 1j * zim
-                    z2 = zre + 1j * (-zim)
-                    neg1 = float(np.mean(np.imag(z1) < 0))
-                    neg2 = float(np.mean(np.imag(z2) < 0))
-                    if neg1 >= neg2:
-                        Z = z1
-                        sign_mode = "imag=raw"
+                    if args.auto_sign:
+                        z1 = zre + 1j * zim
+                        z2 = zre + 1j * (-zim)
+                        neg1 = float(np.mean(np.imag(z1) < 0))
+                        neg2 = float(np.mean(np.imag(z2) < 0))
+                        if neg1 >= neg2:
+                            Z = z1
+                            sign_mode = "imag=raw"
+                        else:
+                            Z = z2
+                            sign_mode = "imag=-raw"
                     else:
-                        Z = z2
-                        sign_mode = "imag=-raw"
-                else:
-                    Z = zre + 1j * (-zim)
-                    sign_mode = "imag=-raw (forced)"
+                        Z = zre + 1j * (-zim)
+                        sign_mode = "imag=-raw (forced)"
 
                 # 5) build initial guess
-                circuit = apply_warburg_to_circuit(
-                    args.circuit or "R0-p(R1,C1)-p(R2,C2)",
-                    args.warburg,
-                )
-                if args.guess.strip():
-                    guess = parse_guess(args.guess)
-                else:
-                    guess = auto_guess_from_circuit(circuit, freq, zre)
+                    circuit = apply_warburg_to_circuit(
+                        args.circuit or "R0-p(R1,C1)-p(R2,C2)",
+                        args.warburg,
+                    )
+                    if args.guess.strip():
+                        guess = parse_guess(args.guess)
+                    else:
+                        guess = auto_guess_from_circuit(circuit, freq, zre)
 
-                print("[DEBUG] Sign mode:", sign_mode)
-                print("[DEBUG] Init guess:", guess)
-                print("[DEBUG] Circuit:", circuit)
+                    print("[DEBUG] Sign mode:", sign_mode)
+                    print("[DEBUG] Init guess:", guess)
+                    print("[DEBUG] Circuit:", circuit)
 
-                model, params, rmse, used_guess = fit_with_restarts(
-                    circuit=circuit,
-                    base_guess=guess,
-                    freq=freq,
-                    Z=Z,
-                    n_starts=max(1, args.n_starts),
-                    weight_by_modulus=args.weight_by_modulus,
-                )
+                    model, params, rmse, used_guess = fit_with_restarts(
+                        circuit=circuit,
+                        base_guess=guess,
+                        freq=freq,
+                        Z=Z,
+                        n_starts=max(1, args.n_starts),
+                        weight_by_modulus=args.weight_by_modulus,
+                    )
 
-                print("=== Fit result ===")
-                print("Serial:", serial)
-                print("Circuit:", circuit)
-                print("Params:", params)
-                print("RMSE(|Z| complex):", rmse)
-                print("Used init guess:", used_guess)
+                    print("=== Fit result ===")
+                    print("Serial:", serial)
+                    print("Circuit:", circuit)
+                    print("Params:", params)
+                    print("RMSE(|Z| complex):", rmse)
+                    print("Used init guess:", used_guess)
 
-                Z_fit = model.predict(freq)
-                out_png = os.path.join(
-                    serial_out_dir,
-                    f"nyquist_fit__{sanitize_filename(str(sheet_used))}__block{chosen_block}.png"
-                )
-                title = f"Nyquist + Fit | file={xlsx_path.name} | serial={serial} | sheet={sheet_used} | block={chosen_block}"
-                save_nyquist(Z, Z_fit, out_png, title)
-                print(f"[INFO] Saved plot -> {out_png}")
-                merged_items.append((serial, out_png))
+                    Z_fit = model.predict(freq)
+                    out_png = os.path.join(
+                        serial_out_dir,
+                        f"nyquist_fit__{sanitize_filename(str(sheet_used))}__block{chosen_block}.png"
+                    )
+                    title = f"Nyquist + Fit | file={xlsx_path.name} | serial={serial} | sheet={sheet_used} | block={chosen_block}"
+                    save_nyquist(Z, Z_fit, out_png, title)
+                    print(f"[INFO] Saved plot -> {out_png}")
+                    merged_items.append((f"{serial}#b{chosen_block}", out_png))
 
-                metrics = compute_fit_metrics(Z, Z_fit)
-                print("[INFO] Fit metrics:", metrics)
+                    metrics = compute_fit_metrics(Z, Z_fit)
+                    print("[INFO] Fit metrics:", metrics)
 
-                metrics_path = os.path.join(
-                    serial_out_dir,
-                    f"fit_metrics__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
-                )
-                with open(metrics_path, "w", encoding="utf-8") as f:
-                    json.dump(metrics, f, indent=2, ensure_ascii=True)
-                print(f"[INFO] Saved metrics -> {metrics_path}")
+                    metrics_path = os.path.join(
+                        serial_out_dir,
+                        f"fit_metrics__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
+                    )
+                    with open(metrics_path, "w", encoding="utf-8") as f:
+                        json.dump(metrics, f, indent=2, ensure_ascii=True)
+                    print(f"[INFO] Saved metrics -> {metrics_path}")
 
-                fit_result = {
-                    "file_name": str(xlsx_path.name),
-                    "group_tag": str(group_tag),
-                    "serial": str(serial),
-                    "sheet": str(sheet_used),
-                    "measurement_basis": meas_meta.get("measurement_basis"),
-                    "measurement_cycle": meas_meta.get("measurement_cycle"),
-                    "chosen_block": int(chosen_block),
-                    "raw_col_indices": {
-                        "freq": int(j_f),
-                        "real": int(j_r),
-                        "imag": int(j_i),
-                    },
-                    "circuit": str(circuit),
-                    "params": [float(x) for x in params],
-                    "rmse_complex_ohm": float(rmse),
-                    "used_init_guess": [float(x) for x in used_guess],
-                }
-                fit_result_path = os.path.join(
-                    serial_out_dir,
-                    f"fit_result__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
-                )
-                with open(fit_result_path, "w", encoding="utf-8") as f:
-                    json.dump(fit_result, f, indent=2, ensure_ascii=True)
-                print(f"[INFO] Saved fit result -> {fit_result_path}")
+                    fit_result = {
+                        "file_name": str(xlsx_path.name),
+                        "group_tag": str(group_tag),
+                        "serial": str(serial),
+                        "sheet": str(sheet_used),
+                        "measurement_basis": meas_meta.get("measurement_basis"),
+                        "measurement_cycle": meas_meta.get("measurement_cycle"),
+                        "requested_block": int(requested_block),
+                        "chosen_block": int(chosen_block),
+                        "raw_col_indices": {
+                            "freq": int(j_f),
+                            "real": int(j_r),
+                            "imag": int(j_i),
+                        },
+                        "circuit": str(circuit),
+                        "params": [float(x) for x in params],
+                        "rmse_complex_ohm": float(rmse),
+                        "used_init_guess": [float(x) for x in used_guess],
+                    }
+                    fit_result_path = os.path.join(
+                        serial_out_dir,
+                        f"fit_result__{sanitize_filename(str(sheet_used))}__block{chosen_block}.json"
+                    )
+                    with open(fit_result_path, "w", encoding="utf-8") as f:
+                        json.dump(fit_result, f, indent=2, ensure_ascii=True)
+                    print(f"[INFO] Saved fit result -> {fit_result_path}")
 
-                resid_df = pd.DataFrame({
-                    "freq_hz": freq,
-                    "z_real_meas_ohm": np.real(Z),
-                    "z_imag_meas_ohm": np.imag(Z),
-                    "z_real_fit_ohm": np.real(Z_fit),
-                    "z_imag_fit_ohm": np.imag(Z_fit),
-                    "resid_real_ohm": np.real(Z) - np.real(Z_fit),
-                    "resid_imag_ohm": np.imag(Z) - np.imag(Z_fit),
-                    "resid_abs_ohm": np.abs(Z - Z_fit),
-                })
-                resid_path = os.path.join(
-                    serial_out_dir,
-                    f"fit_residuals__{sanitize_filename(str(sheet_used))}__block{chosen_block}.csv"
-                )
-                resid_df.to_csv(resid_path, index=False)
-                print(f"[INFO] Saved residuals -> {resid_path}")
-                ok_cnt += 1
+                    resid_df = pd.DataFrame({
+                        "freq_hz": freq,
+                        "z_real_meas_ohm": np.real(Z),
+                        "z_imag_meas_ohm": np.imag(Z),
+                        "z_real_fit_ohm": np.real(Z_fit),
+                        "z_imag_fit_ohm": np.imag(Z_fit),
+                        "resid_real_ohm": np.real(Z) - np.real(Z_fit),
+                        "resid_imag_ohm": np.imag(Z) - np.imag(Z_fit),
+                        "resid_abs_ohm": np.abs(Z - Z_fit),
+                    })
+                    resid_path = os.path.join(
+                        serial_out_dir,
+                        f"fit_residuals__{sanitize_filename(str(sheet_used))}__block{chosen_block}.csv"
+                    )
+                    resid_df.to_csv(resid_path, index=False)
+                    print(f"[INFO] Saved residuals -> {resid_path}")
+                    done_cnt += 1
+                    append_progress_record(
+                        args.out_dir,
+                        {
+                            "file_name": str(xlsx_path.name),
+                            "group_tag": str(group_tag),
+                            "serial": str(serial),
+                            "sheet": str(sheet_used),
+                            "requested_block": int(requested_block),
+                            "chosen_block": int(chosen_block),
+                            "measurement_cycle": meas_meta.get("measurement_cycle"),
+                            "status": "ok",
+                            "rmse_complex_ohm": float(rmse),
+                            "done_tasks": int(done_cnt),
+                            "total_tasks": int(total_tasks),
+                        },
+                    )
+                    print(f"[INFO] Progress: {done_cnt}/{total_tasks} tasks completed")
+                    ok_cnt += 1
             except Exception as e:
                 fail_cnt += 1
+                done_cnt += 1
                 print(f"[WARN] file={xlsx_path.name} serial={serial} failed: {e}")
+                append_progress_record(
+                    args.out_dir,
+                    {
+                        "file_name": str(xlsx_path.name),
+                        "group_tag": str(group_tag),
+                        "serial": str(serial),
+                        "sheet": str(sheet_used),
+                        "done_tasks": int(done_cnt),
+                        "total_tasks": int(total_tasks),
+                        "status": "failed",
+                        "error": str(e),
+                    },
+                )
 
         if args.merge_serial_plots and merged_items:
             merge_png = file_out_dir / f"nyquist_fit_mosaic__{sanitize_filename(str(sheet_used))}.png"
