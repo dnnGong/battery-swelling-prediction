@@ -76,6 +76,34 @@ def numeric_last_le(df: pd.DataFrame, x_col: str, y_col: str, t: float) -> float
     return float(sub.iloc[-1][y_col])
 
 
+def numeric_last_le_with_x(df: pd.DataFrame, x_col: str, y_col: str, t: float) -> Tuple[float, float]:
+    if x_col not in df.columns or y_col not in df.columns:
+        return float("nan"), float("nan")
+    sub = df[[x_col, y_col]].dropna()
+    if sub.empty:
+        return float("nan"), float("nan")
+    sub = sub[sub[x_col] <= t]
+    if sub.empty:
+        return float("nan"), float("nan")
+    sub = sub.sort_values(x_col)
+    row = sub.iloc[-1]
+    return float(row[y_col]), float(row[x_col])
+
+
+def numeric_exact_with_x(df: pd.DataFrame, x_col: str, y_col: str, t: float) -> Tuple[float, float]:
+    if x_col not in df.columns or y_col not in df.columns:
+        return float("nan"), float("nan")
+    sub = df[[x_col, y_col]].dropna()
+    if sub.empty:
+        return float("nan"), float("nan")
+    sub = sub[np.isclose(sub[x_col].astype(float), float(t))]
+    if sub.empty:
+        return float("nan"), float("nan")
+    sub = sub.sort_values(x_col)
+    row = sub.iloc[-1]
+    return float(row[y_col]), float(row[x_col])
+
+
 def slope_last_window(df: pd.DataFrame, x_col: str, y_col: str, t: float, window: float = 10.0) -> float:
     if x_col not in df.columns or y_col not in df.columns:
         return float("nan")
@@ -256,6 +284,7 @@ def build_rows_for_cell(
     max_cycle: int,
     future_k: int,
     soc_target: float,
+    dcir_align_mode: str,
 ) -> List[Dict]:
     rows: List[Dict] = []
 
@@ -288,6 +317,10 @@ def build_rows_for_cell(
         ecm_metrics_use = ecm_metrics if ecm_fit_ok else {}
         params = ecm_result_use.get("params", []) if ecm_result_use else []
         circuit = str(ecm_result_use.get("circuit", "")) if ecm_result_use else ""
+        if dcir_align_mode == "exact":
+            dcir_val_t, dcir_cycle_used = numeric_exact_with_x(dcir_s, "cycle_target", "dcir_mohm", float(t))
+        else:
+            dcir_val_t, dcir_cycle_used = numeric_last_le_with_x(dcir_s, "cycle_target", "dcir_mohm", float(t))
 
         row = {
             "file_name": file_name,
@@ -318,7 +351,8 @@ def build_rows_for_cell(
             "feat_acir_t": numeric_last_le(cm, "cycle_actual", "acir_mohm", float(t)),
             "feat_capacity_t": numeric_last_le(cyc, "cycle", "discharge_capacity_mAh", float(t)),
             "feat_capacity_slope_10": slope_last_window(cyc, "cycle", "discharge_capacity_mAh", float(t), window=10),
-            "feat_dcir_soc_t": numeric_last_le(dcir_s, "cycle_target", "dcir_mohm", float(t)),
+            "feat_dcir_soc_t": dcir_val_t,
+            "feat_dcir_cycle_used": dcir_cycle_used,
             "feat_dcir_soc_slope_10": slope_last_window(dcir_s, "cycle_target", "dcir_mohm", float(t), window=10),
             "feat_ecm_fit_ok": float(ecm_fit_ok),
             "feat_ecm_measurement_cycle": (
@@ -371,6 +405,7 @@ def build_table(
     max_cycle: int,
     future_k: int,
     soc_target: float,
+    dcir_align_mode: str,
 ) -> pd.DataFrame:
     ecm_idx = load_ecm_results_by_cell(ecm_dir)
     all_rows: List[Dict] = []
@@ -418,6 +453,7 @@ def build_table(
                 max_cycle=max_cycle,
                 future_k=future_k,
                 soc_target=soc_target,
+                dcir_align_mode=dcir_align_mode,
             )
             all_rows.extend(rows)
 
@@ -445,7 +481,8 @@ def main() -> None:
             "Example:\n"
             "  python src/build_feature_table.py --xlsx_dir ./dataset/OneDrive_1_2-20-2026 "
             "--ecm_dir ./data/test_ecm_all4 --out_csv ./data/ml/feature_table.csv "
-            "--min_cycle 5 --max_cycle 200 --future_k 20 --soc_target 50\n\n"
+            "--min_cycle 5 --max_cycle 200 --future_k 20 --soc_target 50 "
+            "--dcir_align_mode exact\n\n"
             "The output CSV contains:\n"
             "  - feat_* columns for ML inputs\n"
             "  - y_* columns for thickness targets\n"
@@ -460,6 +497,16 @@ def main() -> None:
     ap.add_argument("--max_cycle", type=int, default=200, help="Maximum cycle to keep when building samples.")
     ap.add_argument("--future_k", type=int, default=20, help="Future horizon K used for y_future_* target columns.")
     ap.add_argument("--soc_target", type=float, default=50.0, help="SOC target used to select the DCIR feature slice.")
+    ap.add_argument(
+        "--dcir_align_mode",
+        default="last_le",
+        choices=["last_le", "exact"],
+        help=(
+            "How to align feat_dcir_soc_t to cycle_t. "
+            "'last_le' uses the latest DCIR with cycle_target <= cycle_t; "
+            "'exact' requires cycle_target == cycle_t."
+        ),
+    )
     ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
     args = ap.parse_args()
     setup_log_tee(args.log_file)
@@ -474,6 +521,7 @@ def main() -> None:
         max_cycle=args.max_cycle,
         future_k=args.future_k,
         soc_target=args.soc_target,
+        dcir_align_mode=args.dcir_align_mode,
     )
 
     if df.empty:
