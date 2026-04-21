@@ -1,6 +1,6 @@
 {
   "table_csv": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv",
-  "out_dir": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t03_slow",
+  "out_dir": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg",
   "target_mode": "fixed_T",
   "sample_mode": "rowwise",
   "label_mode": "absolute",
@@ -23,14 +23,14 @@
     "feat_capacity_slope_10",
     "feat_dcir_soc_t"
   ],
-  "xgb_n_estimators": 900,
+  "xgb_n_estimators": 1200,
   "xgb_max_depth": 4,
-  "xgb_learning_rate": 0.02,
+  "xgb_learning_rate": 0.015,
   "xgb_subsample": 0.85,
   "xgb_colsample_bytree": 0.85,
-  "xgb_min_child_weight": 3,
-  "xgb_reg_alpha": 0.1,
-  "xgb_reg_lambda": 3.0,
-  "run_tag": "xgb_t03_slow",
-  "log_file": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/xgb_t03_slow.log"
+  "xgb_min_child_weight": 2,
+  "xgb_reg_alpha": 0.05,
+  "xgb_reg_lambda": 2.0,
+  "run_tag": "xgb_t11_lighter_reg",
+  "log_file": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/xgb_t11_lighter_reg.log"
 }

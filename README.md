@@ -772,9 +772,10 @@ python src/train_swelling_models.py \
 
 ```bash
 python src/plot_permutation_importance.py \
-  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/perm_importance_ecm6_plus_cap_dcir" \
+  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg" \
   --target_mode fixed_T \
+  --sample_mode rowwise \
   --label_mode absolute \
   --target_transform log \
   --group_tag HYCL \
@@ -782,6 +783,14 @@ python src/plot_permutation_importance.py \
   --custom_features "feat_cycle_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t" \
   --T 100 \
   --max_input_cycle 50 \
+  --xgb_n_estimators 1200 \
+  --xgb_max_depth 4 \
+  --xgb_learning_rate 0.015 \
+  --xgb_subsample 0.85 \
+  --xgb_colsample_bytree 0.85 \
+  --xgb_min_child_weight 2 \
+  --xgb_reg_alpha 0.05 \
+  --xgb_reg_lambda 2.0 \
   --n_repeats 30 \
   --metric mae
 ```
