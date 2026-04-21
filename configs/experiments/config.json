@@ -1,6 +1,6 @@
 {
-  "table_csv": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv",
-  "out_dir": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg",
+  "table_csv": "./data/ml/feature_table_ecm_complete.csv",
+  "out_dir": "./data/ml/experiments/xgb_t11_lighter_reg",
   "target_mode": "fixed_T",
   "sample_mode": "rowwise",
   "label_mode": "absolute",
@@ -32,5 +32,5 @@
   "xgb_reg_alpha": 0.05,
   "xgb_reg_lambda": 2.0,
   "run_tag": "xgb_t11_lighter_reg",
-  "log_file": "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/xgb_t11_lighter_reg.log"
+  "log_file": "./data/logs/xgb_t11_lighter_reg.log"
 }

@@ -268,8 +268,8 @@ pip install torch
 
 ```bash
 python src/build_feature_table.py \
-  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
-  --ecm_dir "./data/test_ecm_all4" \
+  --xlsx_dir "./dataset/udc_xlsx" \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
   --out_csv "./data/ml/feature_table.csv" \
   --min_cycle 5 \
   --max_cycle 200 \
@@ -309,8 +309,8 @@ By default, the script only reports outliers and does not modify your table.
 
 ```bash
 python src/filter_feature_table_outliers.py \
-  --table_csv "./data/ml/test15/feature_table_test15.csv" \
-  --out_dir "./data/ml/test15/outlier_report" \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/outlier_report" \
   --sample_mode future_delta_TK \
   --max_input_cycle 50 \
   --group_tag HYCL
@@ -320,13 +320,13 @@ To actually drop flagged outliers and export a cleaned table:
 
 ```bash
 python src/filter_feature_table_outliers.py \
-  --table_csv "./data/ml/test15/feature_table_test15.csv" \
-  --out_dir "./data/ml/test15/outlier_report_drop" \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/outlier_report_drop" \
   --sample_mode future_delta_TK \
   --max_input_cycle 50 \
   --group_tag HYCL \
   --apply_drop \
-  --out_clean_csv "./data/ml/test15/feature_table_test15_cleaned.csv"
+  --out_clean_csv "./data/ml/feature_table_cleaned.csv"
 ```
 
 Key options:
@@ -497,8 +497,8 @@ Train deep models with the same target modes and output format:
 
 ```bash
 python src/train_swelling_deep.py \
-  --table_csv "./data/ml/hycl_od/feature_table_hycl_pruned.csv" \
-  --out_dir "./data/ml/hycl_od/results_deep" \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results_deep" \
   --target_mode fixed_T \
   --label_mode absolute \
   --T 100 \
@@ -526,8 +526,8 @@ Train Transformer with the same grouped split/output format:
 
 ```bash
 python src/train_swelling_transformer.py \
-  --table_csv "./data/ml/hycl_od/feature_table_hycl_pruned.csv" \
-  --out_dir "./data/ml/hycl_od/results_transformer" \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results_transformer" \
   --target_mode fixed_T \
   --label_mode absolute \
   --T 100 \
@@ -618,8 +618,8 @@ If you enabled `StepwiseLinear`, you can visualize the feature-entry process:
 
 ```bash
 python src/plot_stepwise_regression.py \
-  --trace_csv "./data/ml3/compare_hycl/onedrive_allmodels/results_classic_stepwise/stepwise_trace__fixed_T__absolute__fixedT_100__stepwise_v1.csv" \
-  --out_png "./data/ml3/compare_hycl/onedrive_allmodels/results_classic_stepwise/stepwise_viz.png" \
+  --trace_csv "./data/ml/results_stepwise/stepwise_trace__fixed_T__absolute__fixedT_100__stepwise_v1.csv" \
+  --out_png "./data/ml/results_stepwise/stepwise_viz.png" \
   --mode all
 ```
 
@@ -701,36 +701,70 @@ python src/plot_predictions_scatter.py \
 ## End-to-End Example
 
 This section gives one reproducible command chain from ECM fitting to model
-training and related visualizations. Paths below match the current repo layout.
+training and related visualizations. Paths are repo-relative examples:
+
+- source workbooks: `./dataset/udc_xlsx`
+- cached ECM fits: `./data/ecm/ecm_w_cycle`
+- ML tables/results: `./data/ml`
+- run logs: `./data/logs`
 
 ### 1) ECM fitting
 
 ```bash
 python src/ecm_fit.py \
-  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --xlsx_dir "./dataset/udc_xlsx" \
   --recursive \
   --sheet auto \
   --circuit "R0-p(R1,CPE1)-p(R2,CPE2)-W1" \
   --guess "" \
   --merge_serial_plots \
   --skip_existing \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
-  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/ecm_fit_cycle.log"
+  --out_dir "./data/ecm/ecm_w_cycle" \
+  --log_file "./data/logs/ecm_fit_cycle.log"
 ```
 
 ### 2) Build feature table
 
 ```bash
 python src/build_feature_table.py \
-  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
-  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
-  --out_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
+  --xlsx_dir "./dataset/udc_xlsx" \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_csv "./data/ml/feature_table.csv" \
   --min_cycle 5 \
   --max_cycle 200 \
   --future_k 20 \
   --soc_target 50 \
   --dcir_align_mode last_le \
-  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/build_feature_table_cycle.log"
+  --log_file "./data/logs/build_feature_table.log"
+```
+
+`build_feature_table.py` automatically applies the ECM bad-fit filter before
+writing ECM-derived features.
+
+### 2b) Create ECM-complete feature table
+
+This optional subset keeps only rows with the core ECM-derived features present.
+Because Step 2 leaves failed or unusable ECM fits as missing values, this table
+is useful when you want to train models that compare samples on the same ECM
+feature set.
+
+```bash
+python - <<'PY'
+import pandas as pd
+
+src = "data/ml/feature_table.csv"
+dst = "data/ml/feature_table_ecm_complete.csv"
+df = pd.read_csv(src)
+ecm_cols = [
+    "feat_Rs_ohm",
+    "feat_nsei",
+    "feat_ndl",
+    "feat_R_total_ohm",
+    "feat_sigma",
+]
+df.dropna(subset=ecm_cols).to_csv(dst, index=False)
+print("saved:", dst)
+PY
 ```
 
 ### 3) Train a tuned XGBoost experiment from config
@@ -744,8 +778,8 @@ Or run the same experiment directly from the command line:
 
 ```bash
 python src/train_swelling_models.py \
-  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg" \
+  --table_csv "./data/ml/feature_table_ecm_complete.csv" \
+  --out_dir "./data/ml/experiments/xgb_t11_lighter_reg" \
   --target_mode fixed_T \
   --sample_mode rowwise \
   --label_mode absolute \
@@ -765,15 +799,15 @@ python src/train_swelling_models.py \
   --xgb_reg_alpha 0.05 \
   --xgb_reg_lambda 2.0 \
   --run_tag "xgb_t11_lighter_reg" \
-  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/xgb_t11_lighter_reg.log"
+  --log_file "./data/logs/xgb_t11_lighter_reg.log"
 ```
 
 ### 4) Permutation importance
 
 ```bash
 python src/plot_permutation_importance.py \
-  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg" \
+  --table_csv "./data/ml/feature_table_ecm_complete.csv" \
+  --out_dir "./data/ml/experiments/xgb_t11_lighter_reg" \
   --target_mode fixed_T \
   --sample_mode rowwise \
   --label_mode absolute \
@@ -799,8 +833,8 @@ python src/plot_permutation_importance.py \
 
 ```bash
 python src/plot_incremental_cv_mae.py \
-  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/incremental_cv_ecm6_plus_cap_dcir" \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/incremental_cv" \
   --target_mode fixed_T \
   --label_mode absolute \
   --target_transform log \
@@ -816,8 +850,8 @@ python src/plot_incremental_cv_mae.py \
 
 ```bash
 python src/plot_ecm_param_distributions.py \
-  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_param_distributions" \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_dir "./data/ecm/param_distributions" \
   --group_tag HYCL \
   --sheet 03-4_EIS \
   --rmse_max 1.0 \
@@ -828,9 +862,9 @@ python src/plot_ecm_param_distributions.py \
 
 ```bash
 python src/check_ecm_dcir_alignment.py \
-  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
-  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check" \
+  --xlsx_dir "./dataset/udc_xlsx" \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_dir "./data/ecm/alignment_check" \
   --group_tag HYCL \
   --soc_target 50 \
   --sheet 03-4_EIS \
@@ -841,8 +875,8 @@ python src/check_ecm_dcir_alignment.py \
 
 ```bash
 python src/plot_ecm_dcir_cycle_coverage.py \
-  --overview_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/ecm_dcir_exact_alignment__HYCL__overview.csv" \
-  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/plots" \
+  --overview_csv "./data/ecm/alignment_check/ecm_dcir_exact_alignment__HYCL__overview.csv" \
+  --out_dir "./data/ecm/alignment_check/plots" \
   --title_prefix "HYCL ECM vs DCIR Cycle Coverage"
 ```
 
@@ -854,7 +888,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-p = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv"
+p = "data/ml/feature_table.csv"
 df = pd.read_csv(p)
 sub = df[(df["group_tag"] == "HYCL") & (df["cycle_t"] <= 50)].copy()
 
@@ -873,8 +907,8 @@ cols = [
 
 corr = sub[cols].corr(numeric_only=True)
 
-out_csv = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/corr_matrix_ecm6_plus_cap_dcir.csv"
-out_png = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/corr_matrix_ecm6_plus_cap_dcir.png"
+out_csv = "data/ml/corr_matrix_ecm6_plus_cap_dcir.csv"
+out_png = "data/ml/corr_matrix_ecm6_plus_cap_dcir.png"
 
 corr.to_csv(out_csv)
 
