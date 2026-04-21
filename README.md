@@ -706,7 +706,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 1) ECM fitting
 
 ```bash
-./.venv/bin/python src/ecm_fit.py \
+python src/ecm_fit.py \
   --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
   --recursive \
   --sheet auto \
@@ -722,7 +722,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 2) Build feature table
 
 ```bash
-./.venv/bin/python src/build_feature_table.py \
+python src/build_feature_table.py \
   --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
   --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
   --out_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
@@ -737,14 +737,14 @@ training and related visualizations. Paths below match the current repo layout.
 ### 3) Train a tuned XGBoost experiment from config
 
 ```bash
-./.venv/bin/python src/run_experiment_from_config.py \
+python src/run_experiment_from_config.py \
   --config configs/experiments/hycl_xgb_t11_lighter_reg.json
 ```
 
 ### 4) Permutation importance
 
 ```bash
-./.venv/bin/python src/plot_permutation_importance.py \
+python src/plot_permutation_importance.py \
   --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
   --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/perm_importance_ecm6_plus_cap_dcir" \
   --target_mode fixed_T \
@@ -762,7 +762,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 5) Incremental CV-MAE visualization
 
 ```bash
-./.venv/bin/python src/plot_incremental_cv_mae.py \
+python src/plot_incremental_cv_mae.py \
   --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
   --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/incremental_cv_ecm6_plus_cap_dcir" \
   --target_mode fixed_T \
@@ -779,7 +779,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 6) ECM parameter distributions
 
 ```bash
-./.venv/bin/python src/plot_ecm_param_distributions.py \
+python src/plot_ecm_param_distributions.py \
   --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
   --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_param_distributions" \
   --group_tag HYCL \
@@ -791,7 +791,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 7) ECM/DCIR exact-alignment check
 
 ```bash
-./.venv/bin/python src/check_ecm_dcir_alignment.py \
+python src/check_ecm_dcir_alignment.py \
   --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
   --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
   --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check" \
@@ -804,7 +804,7 @@ training and related visualizations. Paths below match the current repo layout.
 ### 8) ECM/DCIR cycle coverage visualization
 
 ```bash
-./.venv/bin/python src/plot_ecm_dcir_cycle_coverage.py \
+python src/plot_ecm_dcir_cycle_coverage.py \
   --overview_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/ecm_dcir_exact_alignment__HYCL__overview.csv" \
   --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/plots" \
   --title_prefix "HYCL ECM vs DCIR Cycle Coverage"
