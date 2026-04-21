@@ -698,7 +698,7 @@ python src/plot_predictions_scatter.py \
   --mode by_model
 ```
 
-## End-to-End Example (Mentor Reproduction)
+## End-to-End Example
 
 This section gives one reproducible command chain from ECM fitting to model
 training and related visualizations. Paths below match the current repo layout.
@@ -739,6 +739,34 @@ python src/build_feature_table.py \
 ```bash
 python src/run_experiment_from_config.py \
   --config configs/experiments/hycl_xgb_t11_lighter_reg.json
+```
+
+Or run the same experiment directly from the command line:
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm_complete6.csv" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/xgb_tuning/t11_lighter_reg" \
+  --target_mode fixed_T \
+  --sample_mode rowwise \
+  --label_mode absolute \
+  --target_transform log \
+  --T 100 \
+  --max_input_cycle 50 \
+  --model_set basic \
+  --models "XGBoost" \
+  --feature_set custom \
+  --custom_features "feat_cycle_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t" \
+  --xgb_n_estimators 1200 \
+  --xgb_max_depth 4 \
+  --xgb_learning_rate 0.015 \
+  --xgb_subsample 0.85 \
+  --xgb_colsample_bytree 0.85 \
+  --xgb_min_child_weight 2 \
+  --xgb_reg_alpha 0.05 \
+  --xgb_reg_lambda 2.0 \
+  --run_tag "xgb_t11_lighter_reg" \
+  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/xgb_t11_lighter_reg.log"
 ```
 
 ### 4) Permutation importance
