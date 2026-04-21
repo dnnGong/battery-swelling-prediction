@@ -233,6 +233,7 @@ This project now includes multiple scripts for swelling prediction modeling:
 - `src/train_swelling_models.py`: train/evaluate grouped models (`CL/FLC/HYCL`)
   with classic regressors including `Ridge`, `StepwiseLinear`, `RandomForest`,
   and `XGBoost(if installed)`.
+- `src/run_experiment_from_config.py`: run `train_swelling_models.py` from a JSON config file.
 - `src/train_swelling_deep.py`: train/evaluate grouped deep models (`MLP/CNN/LSTM`) with PyTorch.
 - `src/train_swelling_transformer.py`: train/evaluate grouped Transformer model with PyTorch.
 - `src/benchmark_models.py`: batch benchmark runner for `train_swelling_models.py`
@@ -241,6 +242,11 @@ This project now includes multiple scripts for swelling prediction modeling:
 - `src/plot_predictions_scatter.py`: plot `y_true` vs `y_pred` scatter plots from `predictions__*.csv`.
 - `src/plot_stepwise_regression.py`: visualize `stepwise_trace__*.csv` as stepwise path, improvement bars,
   and feature-entry heatmap.
+- `src/plot_permutation_importance.py`: plot permutation importance from a trained classic model setup.
+- `src/plot_incremental_cv_mae.py`: plot incremental CV-MAE curves under a specified feature order.
+- `src/plot_ecm_param_distributions.py`: summarize and visualize ECM parameter ranges/distributions from `fit_result__*.json`.
+- `src/check_ecm_dcir_alignment.py`: check exact cycle overlap between ECM measurement cycles and DCIR cycles.
+- `src/plot_ecm_dcir_cycle_coverage.py`: visualize ECM/DCIR cycle coverage per cell and in aggregate.
 - `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
   row/cycle summaries including `EVTemp (C)` / `EVHum (%)`, with optional merge into `feature_table.csv`.
 - `src/filter_feature_table_outliers.py`: optional plug-in for outlier detection/removal on feature tables.
@@ -268,10 +274,18 @@ python src/build_feature_table.py \
   --min_cycle 5 \
   --max_cycle 200 \
   --future_k 20 \
-  --soc_target 50
+  --soc_target 50 \
+  --dcir_align_mode last_le
 ```
 
 Output: `./data/ml/feature_table.csv`
+
+Useful options:
+- `--soc_target`: target SOC used to choose the DCIR slice.
+- `--dcir_align_mode last_le|exact`:
+  - `last_le` (default): use the latest `cycle_target <= cycle_t`
+  - `exact`: require `cycle_target == cycle_t`
+- `--log_file`: save a copy of stdout/stderr while keeping terminal output.
 
 ### Step A0 (Optional): Parse `dataset/raw_data` and add temperature features
 
@@ -428,9 +442,33 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 - `--feature_set full|variance|discharge|ecm|custom`
 - `--variance_top_n` for `variance`
 - `--custom_features` for `custom`
+- `--sample_mode anchor|rowwise`
+  - `anchor`: one sample per cell
+  - `rowwise`: one sample per row up to `max_input_cycle`
 - `--target_transform none|log` for optional log-transform on positive absolute targets
 - `--stepwise_max_features`, `--stepwise_min_improvement`, `--stepwise_cv_splits` for `StepwiseLinear`
+- `--xgb_n_estimators`, `--xgb_max_depth`, `--xgb_learning_rate`,
+  `--xgb_subsample`, `--xgb_colsample_bytree`, `--xgb_min_child_weight`,
+  `--xgb_reg_alpha`, `--xgb_reg_lambda` for XGBoost tuning
 - `--run_tag` to append a suffix in output file names
+- `--log_file` to tee stdout/stderr into a file
+
+### Step B0: Config-Driven Experiments
+
+You can run classic-model experiments from a JSON config:
+
+```bash
+python src/run_experiment_from_config.py \
+  --config configs/experiments/hycl_xgb_t03_slow.json \
+  --dry_run
+```
+
+Then execute it directly:
+
+```bash
+python src/run_experiment_from_config.py \
+  --config configs/experiments/hycl_xgb_t03_slow.json
+```
 
 ### Step B1: Batch Benchmark (Optional)
 
@@ -658,4 +696,158 @@ python src/plot_predictions_scatter.py \
   --pred_csv "./data/ml/results/predictions__fixed_T__absolute__fixedT_100.csv" \
   --out_png "./data/ml/pred_scatter.png" \
   --mode by_model
+```
+
+## End-to-End Example (Mentor Reproduction)
+
+This section gives one reproducible command chain from ECM fitting to model
+training and related visualizations. Paths below match the current repo layout.
+
+### 1) ECM fitting
+
+```bash
+./.venv/bin/python src/ecm_fit.py \
+  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --recursive \
+  --sheet auto \
+  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)" \
+  --warburg W \
+  --guess "" \
+  --merge_serial_plots \
+  --skip_existing \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
+  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/ecm_fit_cycle.log"
+```
+
+### 2) Build feature table
+
+```bash
+./.venv/bin/python src/build_feature_table.py \
+  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
+  --out_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
+  --min_cycle 5 \
+  --max_cycle 200 \
+  --future_k 20 \
+  --soc_target 50 \
+  --dcir_align_mode last_le \
+  --log_file "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/logs/build_feature_table_cycle.log"
+```
+
+### 3) Train a tuned XGBoost experiment from config
+
+```bash
+./.venv/bin/python src/run_experiment_from_config.py \
+  --config configs/experiments/hycl_xgb_t11_lighter_reg.json
+```
+
+### 4) Permutation importance
+
+```bash
+./.venv/bin/python src/plot_permutation_importance.py \
+  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/perm_importance_ecm6_plus_cap_dcir" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --target_transform log \
+  --group_tag HYCL \
+  --model XGBoost \
+  --custom_features "feat_cycle_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t" \
+  --T 100 \
+  --max_input_cycle 50 \
+  --n_repeats 30 \
+  --metric mae
+```
+
+### 5) Incremental CV-MAE visualization
+
+```bash
+./.venv/bin/python src/plot_incremental_cv_mae.py \
+  --table_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/incremental_cv_ecm6_plus_cap_dcir" \
+  --target_mode fixed_T \
+  --label_mode absolute \
+  --target_transform log \
+  --group_tag HYCL \
+  --model Ridge \
+  --custom_features "feat_cycle_t,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma" \
+  --T 100 \
+  --max_input_cycle 50 \
+  --cv_splits 5
+```
+
+### 6) ECM parameter distributions
+
+```bash
+./.venv/bin/python src/plot_ecm_param_distributions.py \
+  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_param_distributions" \
+  --group_tag HYCL \
+  --sheet 03-4_EIS \
+  --rmse_max 1.0 \
+  --title "ECM Parameter Distributions"
+```
+
+### 7) ECM/DCIR exact-alignment check
+
+```bash
+./.venv/bin/python src/check_ecm_dcir_alignment.py \
+  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --ecm_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/ecm_w_cycle" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check" \
+  --group_tag HYCL \
+  --soc_target 50 \
+  --sheet 03-4_EIS \
+  --rmse_max 1.0
+```
+
+### 8) ECM/DCIR cycle coverage visualization
+
+```bash
+./.venv/bin/python src/plot_ecm_dcir_cycle_coverage.py \
+  --overview_csv "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/ecm_dcir_exact_alignment__HYCL__overview.csv" \
+  --out_dir "./data/ml3/compare_hycl/onedrive_h_cycle_ecm/alignment_check/plots" \
+  --title_prefix "HYCL ECM vs DCIR Cycle Coverage"
+```
+
+### 9) Correlation matrix for selected features
+
+```bash
+python - <<'PY'
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+p = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/feature_table_h_cycle_ecm.csv"
+df = pd.read_csv(p)
+sub = df[(df["group_tag"] == "HYCL") & (df["cycle_t"] <= 50)].copy()
+
+cols = [
+    "feat_Rs_ohm",
+    "feat_dcir_soc_t",
+    "feat_R_total_ohm",
+    "feat_capacity_t",
+    "feat_capacity_slope_10",
+    "feat_cycle_t",
+    "feat_nsei",
+    "feat_ndl",
+    "feat_sigma",
+    "y_abs_thickness_t",
+]
+
+corr = sub[cols].corr(numeric_only=True)
+
+out_csv = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/corr_matrix_ecm6_plus_cap_dcir.csv"
+out_png = "data/ml3/compare_hycl/onedrive_h_cycle_ecm/corr_matrix_ecm6_plus_cap_dcir.png"
+
+corr.to_csv(out_csv)
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, square=True)
+plt.title("Correlation Matrix: HYCL ECM + capacity + DCIR")
+plt.tight_layout()
+plt.savefig(out_png, dpi=200)
+print("saved:", out_csv)
+print("saved:", out_png)
+PY
 ```
