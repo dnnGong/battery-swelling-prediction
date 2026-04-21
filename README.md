@@ -710,8 +710,7 @@ python src/ecm_fit.py \
   --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
   --recursive \
   --sheet auto \
-  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)" \
-  --warburg W \
+  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)-W1" \
   --guess "" \
   --merge_serial_plots \
   --skip_existing \
@@ -738,7 +737,7 @@ python src/build_feature_table.py \
 
 ```bash
 python src/run_experiment_from_config.py \
-  --config configs/experiments/hycl_xgb_t11_lighter_reg.json
+  --config configs/experiments/config.json
 ```
 
 Or run the same experiment directly from the command line:
