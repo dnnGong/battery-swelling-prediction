@@ -463,7 +463,10 @@ def fit_eval_one_group(
         model.fit(X_tr, y_tr_model)
         pred_model = np.asarray(model.predict(X_te)).reshape(-1)
         pred = np.exp(pred_model) if target_transform == "log" else pred_model
-        selected_features = ""
+        # By default, classic models consume the full valid feature list.
+        # Models with explicit feature selection (e.g. StepwiseLinear) can
+        # override this below with their selected subset.
+        selected_features = ",".join(valid_cols)
         if hasattr(model, "selected_idx_"):
             selected_idx = [int(i) for i in getattr(model, "selected_idx_", [])]
             selected_features = ",".join(valid_cols[i] for i in selected_idx)
