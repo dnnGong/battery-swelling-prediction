@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.train_swelling_models import (
     build_models,
     pick_anchor_rows_fixed_T,
+    pick_rowwise_rows_current,
     pick_rows_future_delta_TK,
     train_test_group_split,
 )
@@ -39,7 +40,10 @@ def predict_with_transform(model: object, X: np.ndarray, target_transform: str) 
 def build_dataset(args: argparse.Namespace) -> pd.DataFrame:
     df = pd.read_csv(args.table_csv)
     if args.target_mode == "fixed_T":
-        data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
+        if args.sample_mode == "anchor":
+            data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
+        else:
+            data = pick_rowwise_rows_current(df, max_input_cycle=args.max_input_cycle)
     else:
         data = pick_rows_future_delta_TK(df, max_input_cycle=args.max_input_cycle)
     if data.empty:
@@ -81,6 +85,12 @@ def main() -> None:
     ap.add_argument("--T", type=int, default=100)
     ap.add_argument("--future_k", type=int, default=20)
     ap.add_argument("--max_input_cycle", type=int, default=50)
+    ap.add_argument(
+        "--sample_mode",
+        choices=["anchor", "rowwise"],
+        default="anchor",
+        help="Sampling mode for fixed_T. Use rowwise to match rowwise training experiments.",
+    )
     ap.add_argument("--group_tag", default="HYCL", help="One of CL/FLC/HYCL.")
     ap.add_argument("--model", default="Ridge", help="Single model name, e.g. Ridge or RandomForest.")
     ap.add_argument("--custom_features", required=True, help="Comma list of feature columns.")
@@ -88,6 +98,14 @@ def main() -> None:
     ap.add_argument("--test_size", type=float, default=0.2)
     ap.add_argument("--n_repeats", type=int, default=30)
     ap.add_argument("--metric", choices=["mae", "rmse"], default="mae", help="Metric used for ranking and plot axis.")
+    ap.add_argument("--xgb_n_estimators", type=int, default=600, help="XGBoost n_estimators.")
+    ap.add_argument("--xgb_max_depth", type=int, default=6, help="XGBoost max_depth.")
+    ap.add_argument("--xgb_learning_rate", type=float, default=0.03, help="XGBoost learning_rate.")
+    ap.add_argument("--xgb_subsample", type=float, default=0.9, help="XGBoost subsample.")
+    ap.add_argument("--xgb_colsample_bytree", type=float, default=0.9, help="XGBoost colsample_bytree.")
+    ap.add_argument("--xgb_min_child_weight", type=float, default=1.0, help="XGBoost min_child_weight.")
+    ap.add_argument("--xgb_reg_alpha", type=float, default=0.0, help="XGBoost reg_alpha.")
+    ap.add_argument("--xgb_reg_lambda", type=float, default=1.0, help="XGBoost reg_lambda.")
     args = ap.parse_args()
 
     if args.target_transform == "log" and args.label_mode != "absolute":
@@ -120,7 +138,19 @@ def main() -> None:
     y_te = te_df[label_col].to_numpy(dtype=float).reshape(-1)
     y_tr_model = np.log(y_tr) if args.target_transform == "log" else y_tr
 
-    models = build_models(seed=args.seed, model_set="all", include_models=[args.model])
+    models = build_models(
+        seed=args.seed,
+        model_set="all",
+        include_models=[args.model],
+        xgb_n_estimators=args.xgb_n_estimators,
+        xgb_max_depth=args.xgb_max_depth,
+        xgb_learning_rate=args.xgb_learning_rate,
+        xgb_subsample=args.xgb_subsample,
+        xgb_colsample_bytree=args.xgb_colsample_bytree,
+        xgb_min_child_weight=args.xgb_min_child_weight,
+        xgb_reg_alpha=args.xgb_reg_alpha,
+        xgb_reg_lambda=args.xgb_reg_lambda,
+    )
     if args.model not in models:
         raise ValueError(f"Unknown/unavailable model: {args.model}")
     model = models[args.model]
@@ -155,7 +185,11 @@ def main() -> None:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"perm_importance__{args.target_mode}__{args.label_mode}__{args.group_tag}__{args.model}"
+    stem_parts = ["perm_importance", args.target_mode, args.label_mode]
+    if args.target_mode == "fixed_T" and args.sample_mode != "anchor":
+        stem_parts.append(args.sample_mode)
+    stem_parts.extend([args.group_tag, args.model])
+    stem = "__".join(stem_parts)
     csv_path = out_dir / f"{stem}.csv"
     png_path = out_dir / f"{stem}__{args.metric}.png"
 
