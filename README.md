@@ -444,7 +444,7 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 - `--custom_features` for `custom`
 - `--sample_mode anchor|rowwise`
   - `anchor`: one sample per cell
-  - `rowwise`: one sample per row up to `max_input_cycle`
+  - `rowwise`: one sample per row up to `max_input_cycle`, with the same cell's fixed-`T` thickness as the target
 - `--target_transform none|log` for optional log-transform on positive absolute targets
 - `--stepwise_max_features`, `--stepwise_min_improvement`, `--stepwise_cv_splits` for `StepwiseLinear`
 - `--xgb_n_estimators`, `--xgb_max_depth`, `--xgb_learning_rate`,

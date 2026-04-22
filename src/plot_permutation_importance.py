@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.train_swelling_models import (
     build_models,
     pick_anchor_rows_fixed_T,
-    pick_rowwise_rows_current,
+    pick_rowwise_rows_fixed_T,
     pick_rows_future_delta_TK,
     train_test_group_split,
 )
@@ -43,7 +43,7 @@ def build_dataset(args: argparse.Namespace) -> pd.DataFrame:
         if args.sample_mode == "anchor":
             data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         else:
-            data = pick_rowwise_rows_current(df, max_input_cycle=args.max_input_cycle)
+            data = pick_rowwise_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
     else:
         data = pick_rows_future_delta_TK(df, max_input_cycle=args.max_input_cycle)
     if data.empty:

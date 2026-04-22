@@ -77,21 +77,38 @@ def pick_anchor_rows_fixed_T(df: pd.DataFrame, T: int, max_input_cycle: int) -> 
     return pd.DataFrame(out)
 
 
-def pick_rowwise_rows_current(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
+def pick_rowwise_rows_fixed_T(df: pd.DataFrame, T: int, max_input_cycle: int) -> pd.DataFrame:
     """
     Build one sample per row up to max_input_cycle, with target taken from the
-    same row's thickness values.
+    same cell's latest row at cycle<=T.
 
     This mode keeps many cycle-level samples per cell while still relying on
     grouped train/test splitting by cell_key to avoid leakage across cells.
     """
-    sub = df[df["cycle_t"] <= max_input_cycle].copy()
-    if sub.empty:
-        return sub
-    sub["target_abs"] = sub["y_abs_thickness_t"].astype(float)
-    sub["target_delta"] = sub["y_delta_thickness_baseline_t"].astype(float)
-    sub["target_cycle"] = sub["cycle_t"].astype(int)
-    return sub
+    out = []
+    for _, g in df.groupby("cell_key"):
+        g = g.sort_values("cycle_t")
+
+        tgt = g[g["cycle_t"] <= T]
+        if tgt.empty:
+            continue
+        tgt_row = tgt.iloc[-1]
+        target_cycle = int(tgt_row["cycle_t"])
+
+        inputs = g[(g["cycle_t"] <= max_input_cycle) & (g["cycle_t"] <= target_cycle)]
+        if inputs.empty:
+            continue
+
+        for _, row in inputs.iterrows():
+            sample = row.copy()
+            sample["target_abs"] = float(tgt_row["y_abs_thickness_t"])
+            sample["target_delta"] = float(tgt_row["y_delta_thickness_baseline_t"])
+            sample["target_cycle"] = target_cycle
+            out.append(sample)
+
+    if not out:
+        return pd.DataFrame()
+    return pd.DataFrame(out)
 
 
 def pick_rows_future_delta_TK(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
@@ -563,7 +580,7 @@ def main() -> None:
         help=(
             "Sampling mode for fixed_T:\n"
             "  anchor  : one sample per cell using the latest row up to max_input_cycle\n"
-            "  rowwise : one sample per row up to max_input_cycle, with same-row thickness as target"
+            "  rowwise : one sample per row up to max_input_cycle, with the same cell's fixed-T thickness as target"
         ),
     )
     ap.add_argument("--seed", type=int, default=42, help="Random seed for grouped train/test split and models.")
@@ -635,7 +652,7 @@ def main() -> None:
         if args.sample_mode == "anchor":
             data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         else:
-            data = pick_rowwise_rows_current(df, max_input_cycle=args.max_input_cycle)
+            data = pick_rowwise_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         mode_tag = f"fixedT_{args.T}"
     else:
         data = pick_rows_future_delta_TK(df, max_input_cycle=args.max_input_cycle)
