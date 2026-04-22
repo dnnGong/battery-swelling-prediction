@@ -1072,6 +1072,7 @@ def main():
 
     ok_cnt = 0
     fail_cnt = 0
+    skip_cnt = 0
     done_cnt = 0
 
     for xlsx_path in xlsx_files:
@@ -1131,6 +1132,7 @@ def main():
                     if args.fit_mode == "all_valid_blocks":
                         if args.skip_existing and has_existing_block_fit(serial_out_dir, sheet_used, requested_block):
                             done_cnt += 1
+                            skip_cnt += 1
                             print(f"[INFO] [{done_cnt}/{total_tasks}] Skipping serial={serial} block={requested_block} because existing fit_result was found")
                             append_progress_record(
                                 args.out_dir,
@@ -1147,6 +1149,7 @@ def main():
                     else:
                         if args.skip_existing and has_existing_serial_fit(serial_out_dir, sheet_used):
                             done_cnt += 1
+                            skip_cnt += 1
                             print(f"[INFO] [{done_cnt}/{total_tasks}] Skipping serial={serial} because existing fit_result was found for sheet={sheet_used}")
                             append_progress_record(
                                 args.out_dir,
@@ -1373,7 +1376,10 @@ def main():
             )
             print(f"[INFO] Saved merged serial plot -> {merge_png}")
 
-    print(f"\n[INFO] Done. Output -> {args.out_dir} | success={ok_cnt}, failed={fail_cnt}")
+    print(
+        f"\n[INFO] Done. Output -> {args.out_dir} | "
+        f"success={ok_cnt}, failed={fail_cnt}, skipped_existing={skip_cnt}, total={total_tasks}"
+    )
 
 
 if __name__ == "__main__":

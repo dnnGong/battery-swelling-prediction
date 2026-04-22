@@ -723,6 +723,26 @@ python src/ecm_fit.py \
   --log_file "./data/logs/ecm_fit_cycle.log"
 ```
 
+### 1b) Check ECM fitting progress
+
+`ecm_fit.py` appends one JSON record per completed, skipped, or failed fitting
+task to `ecm_progress.jsonl`.
+
+```bash
+python - <<'PY'
+import json
+from collections import Counter
+
+p = "data/ecm/ecm_w_cycle/ecm_progress.jsonl"
+cnt = Counter()
+with open(p, "r", encoding="utf-8") as f:
+    for line in f:
+        if line.strip():
+            cnt[json.loads(line)["status"]] += 1
+print(cnt)
+PY
+```
+
 ### 2) Build feature table
 
 ```bash
