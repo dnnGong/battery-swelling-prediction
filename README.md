@@ -900,44 +900,16 @@ python src/plot_ecm_dcir_cycle_coverage.py \
   --title_prefix "HYCL ECM vs DCIR Cycle Coverage"
 ```
 
-### 9) Correlation matrix for selected features
+### 9) Feature correlation matrix visualization
 
 ```bash
-python - <<'PY'
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-p = "data/ml/feature_table.csv"
-df = pd.read_csv(p)
-sub = df[(df["group_tag"] == "HYCL") & (df["cycle_t"] <= 50)].copy()
-
-cols = [
-    "feat_Rs_ohm",
-    "feat_dcir_soc_t",
-    "feat_R_total_ohm",
-    "feat_capacity_t",
-    "feat_capacity_slope_10",
-    "feat_cycle_t",
-    "feat_nsei",
-    "feat_ndl",
-    "feat_sigma",
-    "y_abs_thickness_t",
-]
-
-corr = sub[cols].corr(numeric_only=True)
-
-out_csv = "data/ml/corr_matrix_ecm6_plus_cap_dcir.csv"
-out_png = "data/ml/corr_matrix_ecm6_plus_cap_dcir.png"
-
-corr.to_csv(out_csv)
-
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, square=True)
-plt.title("Correlation Matrix: HYCL ECM + capacity + DCIR")
-plt.tight_layout()
-plt.savefig(out_png, dpi=200)
-print("saved:", out_csv)
-print("saved:", out_png)
-PY
+python src/plot_feature_corr.py \
+  --table_csv "./data/ml/feature_table_ecm_complete.csv" \
+  --out_png "./data/ml/corr_selected_ecm_cap_dcir.png" \
+  --columns "feat_Rs_ohm,feat_dcir_soc_t,feat_R_total_ohm,feat_capacity_t,feat_capacity_slope_10,feat_cycle_t,feat_nsei,feat_ndl,feat_sigma,y_abs_thickness_t" \
+  --group_tag HYCL \
+  --max_cycle 50 \
+  --method spearman \
+  --annot \
+  --mode features_targets
 ```
