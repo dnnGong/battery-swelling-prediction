@@ -346,9 +346,22 @@ Key options:
 
 `target_mode` and `label_mode` are parameterized so you can compare:
 - absolute thickness vs delta thickness
-- fixed cycle T vs future T->T+K
+- current-cycle estimation, fixed cycle T prediction, and future T->T+K prediction
 
-#### 1) Fixed cycle T, absolute thickness
+#### 1) Current-cycle absolute thickness
+
+This estimates thickness at the same cycle as the input features.
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode current \
+  --label_mode absolute \
+  --max_input_cycle 50
+```
+
+#### 2) Fixed cycle T, absolute thickness
 
 ```bash
 python src/train_swelling_models.py \
@@ -394,7 +407,7 @@ python src/train_swelling_models.py \
   --run_tag "stepwise_v1"
 ```
 
-#### 2) Fixed cycle T, delta thickness
+#### 3) Fixed cycle T, delta thickness
 
 ```bash
 python src/train_swelling_models.py \
@@ -406,7 +419,7 @@ python src/train_swelling_models.py \
   --max_input_cycle 50
 ```
 
-#### 3) Future T->T+K, absolute thickness at t+K
+#### 4) Future T->T+K, absolute thickness at t+K
 
 ```bash
 python src/train_swelling_models.py \
@@ -418,7 +431,7 @@ python src/train_swelling_models.py \
   --max_input_cycle 50
 ```
 
-#### 4) Future T->T+K, delta thickness (t+K minus t)
+#### 5) Future T->T+K, delta thickness (t+K minus t)
 
 ```bash
 python src/train_swelling_models.py \
@@ -450,7 +463,7 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 - `--custom_features` for `custom`
 - `--sample_mode anchor|rowwise`
   - `anchor`: one sample per cell
-  - `rowwise`: one sample per row up to `max_input_cycle`, with the same cell's fixed-`T` thickness as the target
+  - `rowwise`: for `fixed_T`, one sample per row up to `max_input_cycle`, with the same cell's fixed-`T` thickness as the target
 - `--target_transform none|log` for optional log-transform on positive absolute targets
 - `--stepwise_max_features`, `--stepwise_min_improvement`, `--stepwise_cv_splits` for `StepwiseLinear`
 - `--xgb_n_estimators`, `--xgb_max_depth`, `--xgb_learning_rate`,
@@ -579,7 +592,7 @@ Each row is one model result under one group (`CL`/`FLC`/`HYCL`), with key field
 This is the run configuration and feature snapshot for reproducibility:
 
 - `table_csv`: input feature table path
-- `target_mode`: `fixed_T` or `future_delta_TK`
+- `target_mode`: `current`, `fixed_T`, or `future_delta_TK`
 - `label_mode`: `absolute` or `delta`
 - `target_transform`: `none` or `log`
 - `T`: target cycle for `fixed_T`
@@ -806,11 +819,10 @@ Or run the same experiment directly from the command line:
 python src/train_swelling_models.py \
   --table_csv "./data/ml/feature_table_ecm_complete.csv" \
   --out_dir "./data/ml/experiments/xgb_t11_lighter_reg" \
-  --target_mode fixed_T \
+  --target_mode current \
   --sample_mode rowwise \
   --label_mode absolute \
   --target_transform log \
-  --T 100 \
   --max_input_cycle 50 \
   --model_set basic \
   --models "XGBoost" \
@@ -834,14 +846,13 @@ python src/train_swelling_models.py \
 python src/plot_permutation_importance.py \
   --table_csv "./data/ml/feature_table_ecm_complete.csv" \
   --out_dir "./data/ml/experiments/xgb_t11_lighter_reg" \
-  --target_mode fixed_T \
+  --target_mode current \
   --sample_mode rowwise \
   --label_mode absolute \
   --target_transform log \
   --group_tag HYCL \
   --model XGBoost \
   --custom_features "feat_cycle_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t" \
-  --T 100 \
   --max_input_cycle 50 \
   --xgb_n_estimators 1200 \
   --xgb_max_depth 4 \

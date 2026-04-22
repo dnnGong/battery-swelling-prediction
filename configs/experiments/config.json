@@ -1,7 +1,7 @@
 {
   "table_csv": "./data/ml/feature_table_ecm_complete.csv",
   "out_dir": "./data/ml/experiments/xgb_t11_lighter_reg",
-  "target_mode": "fixed_T",
+  "target_mode": "current",
   "sample_mode": "rowwise",
   "label_mode": "absolute",
   "target_transform": "log",

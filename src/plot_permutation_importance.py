@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.train_swelling_models import (
     build_models,
     pick_anchor_rows_fixed_T,
+    pick_rows_current_cycle,
     pick_rowwise_rows_fixed_T,
     pick_rows_future_delta_TK,
     train_test_group_split,
@@ -39,7 +40,9 @@ def predict_with_transform(model: object, X: np.ndarray, target_transform: str) 
 
 def build_dataset(args: argparse.Namespace) -> pd.DataFrame:
     df = pd.read_csv(args.table_csv)
-    if args.target_mode == "fixed_T":
+    if args.target_mode == "current":
+        data = pick_rows_current_cycle(df, max_input_cycle=args.max_input_cycle)
+    elif args.target_mode == "fixed_T":
         if args.sample_mode == "anchor":
             data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         else:
@@ -79,7 +82,7 @@ def main() -> None:
     )
     ap.add_argument("--table_csv", required=True, help="Input feature table CSV path.")
     ap.add_argument("--out_dir", required=True, help="Output directory for CSV and PNG.")
-    ap.add_argument("--target_mode", choices=["fixed_T", "future_delta_TK"], required=True)
+    ap.add_argument("--target_mode", choices=["current", "fixed_T", "future_delta_TK"], required=True)
     ap.add_argument("--label_mode", choices=["absolute", "delta"], required=True)
     ap.add_argument("--target_transform", choices=["none", "log"], default="none")
     ap.add_argument("--T", type=int, default=100)
@@ -186,7 +189,9 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem_parts = ["perm_importance", args.target_mode, args.label_mode]
-    if args.target_mode == "fixed_T" and args.sample_mode != "anchor":
+    if args.target_mode == "current":
+        stem_parts.append("current_cycle")
+    elif args.target_mode == "fixed_T" and args.sample_mode != "anchor":
         stem_parts.append(args.sample_mode)
     stem_parts.extend([args.group_tag, args.model])
     stem = "__".join(stem_parts)

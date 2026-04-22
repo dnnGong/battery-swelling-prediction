@@ -111,6 +111,23 @@ def pick_rowwise_rows_fixed_T(df: pd.DataFrame, T: int, max_input_cycle: int) ->
     return pd.DataFrame(out)
 
 
+def pick_rows_current_cycle(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
+    """
+    Build one sample per row up to max_input_cycle, with target taken from the
+    same row's current-cycle thickness.
+
+    This is the current-cycle thickness estimation task: features at cycle_t
+    predict thickness at the same cycle_t.
+    """
+    sub = df[df["cycle_t"] <= max_input_cycle].copy()
+    if sub.empty:
+        return sub
+    sub["target_abs"] = sub["y_abs_thickness_t"].astype(float)
+    sub["target_delta"] = sub["y_delta_thickness_baseline_t"].astype(float)
+    sub["target_cycle"] = sub["cycle_t"].astype(int)
+    return sub
+
+
 def pick_rows_future_delta_TK(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
     """
     Use row at cycle t as input and future columns (t->t+K) as target.
@@ -539,6 +556,9 @@ def main() -> None:
         ),
         epilog=(
             "Examples:\n"
+            "  Current-cycle absolute thickness:\n"
+            "    python src/train_swelling_models.py --table_csv ./data/ml/feature_table.csv "
+            "--out_dir ./data/ml/results --target_mode current --label_mode absolute --max_input_cycle 50\n\n"
             "  Fixed-T absolute thickness:\n"
             "    python src/train_swelling_models.py --table_csv ./data/ml/feature_table.csv "
             "--out_dir ./data/ml/results --target_mode fixed_T --label_mode absolute --T 100 --max_input_cycle 50\n\n"
@@ -552,10 +572,11 @@ def main() -> None:
     ap.add_argument("--out_dir", required=True, help="Output directory for results__*.csv, predictions__*.csv, and run_meta__*.json")
     ap.add_argument(
         "--target_mode",
-        choices=["fixed_T", "future_delta_TK"],
+        choices=["current", "fixed_T", "future_delta_TK"],
         required=True,
         help=(
             "Prediction target definition:\n"
+            "  current          : estimate current-cycle thickness from current-cycle features\n"
             "  fixed_T         : predict thickness at a fixed cycle T\n"
             "  future_delta_TK : predict future thickness at t+K or delta from t to t+K"
         ),
@@ -648,7 +669,10 @@ def main() -> None:
     if df.empty:
         raise ValueError("Input table is empty.")
 
-    if args.target_mode == "fixed_T":
+    if args.target_mode == "current":
+        data = pick_rows_current_cycle(df, max_input_cycle=args.max_input_cycle)
+        mode_tag = "current_cycle"
+    elif args.target_mode == "fixed_T":
         if args.sample_mode == "anchor":
             data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         else:
