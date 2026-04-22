@@ -7,11 +7,17 @@ Utilities for battery UDC Excel analysis:
 
 ## Project Structure
 
-- `src/cycle_plot.py`: capacity/thickness/OCV/ACIR/DCIR plotting by serial
-- `src/eis_plot.py`: Nyquist + Bode plotting from EIS sheets
-- `src/ecm_fit.py`: equivalent circuit fitting and fit-quality outputs
-- `dataset/`: original UDC files
-- `data/`: generated plots/results
+- `src/`: analysis, fitting, feature engineering, modeling, and visualization scripts
+  - `cycle_plot.py`, `eis_plot.py`: UDC cycle and EIS plotting utilities
+  - `ecm_fit.py`: equivalent-circuit-model fitting and fit-quality logging
+  - `build_feature_table.py`: unified ML feature table builder from UDC + ECM outputs
+  - `train_swelling_models.py`, `run_experiment_from_config.py`: classical ML/XGBoost training workflows
+  - `train_swelling_deep.py`, `train_swelling_transformer.py`: optional neural-network and Transformer models
+  - `plot_*`, `check_*`, `filter_*`: diagnostics, correlation plots, alignment checks, feature importance, and result visualizations
+- `configs/experiments/`: JSON configs for reproducible training runs
+- `dataset/`: input UDC datasets; large/private datasets should be kept outside Git when needed
+- `data/`: generated outputs such as ECM fits, feature tables, model results, plots, and logs
+- `requirements.txt`: Python dependencies for the main analysis workflow
 
 ## Environment
 
