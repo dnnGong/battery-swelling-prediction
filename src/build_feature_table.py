@@ -25,6 +25,7 @@ from src.cycle_plot import (
     extract_from_cyclemeasure,
     extract_from_cycledcir,
 )
+from src.extract_device_ecm_features import merge_device_ecm_features
 
 
 class TeeStream:
@@ -508,6 +509,13 @@ def main() -> None:
         ),
     )
     ap.add_argument("--log_file", default="", help="Optional path to save a copy of stdout/stderr logs.")
+    ap.add_argument("--device_ecm_csv", default="", help="Optional CSV from src/extract_device_ecm_features.py to merge device-side ECM proxy features.")
+    ap.add_argument(
+        "--device_align_mode",
+        default="last_le",
+        choices=["last_le", "exact"],
+        help="How to align device-side ECM proxy features to cycle_t when --device_ecm_csv is provided.",
+    )
     args = ap.parse_args()
     setup_log_tee(args.log_file)
 
@@ -527,6 +535,17 @@ def main() -> None:
     if df.empty:
         print("[WARN] No rows were built. Check xlsx/ecm paths and sheet availability.")
         return
+
+    if args.device_ecm_csv:
+        device_csv = Path(args.device_ecm_csv)
+        if not device_csv.exists():
+            raise FileNotFoundError(f"device_ecm_csv not found: {device_csv}")
+        dev = pd.read_csv(device_csv)
+        before_cols = len(df.columns)
+        df = merge_device_ecm_features(df, dev, align_mode=args.device_align_mode)
+        added_cols = len(df.columns) - before_cols
+        print(f"[INFO] Merged device-side ECM proxy features from: {device_csv}")
+        print(f"[INFO] Added columns: {added_cols}")
 
     df.to_csv(out_csv, index=False)
     print(f"[INFO] Saved feature table: {out_csv}")
