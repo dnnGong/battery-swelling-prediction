@@ -47,7 +47,7 @@ def parse_metadata(line1: str, file_name: str) -> Dict[str, str]:
     procedure = m_proc.group(1).strip() if m_proc else ""
 
     serial = ""
-    m_serial = re.search(r"RDM-MS2_([^_]+)_", file_name)
+    m_serial = re.search(r"RDM-MS\d+_([^_]+)_", file_name)
     if m_serial:
         serial = m_serial.group(1).strip()
 
