@@ -51,6 +51,16 @@ def slope_vs_sqrt_t(t_s: np.ndarray, v: np.ndarray, t_min_s: float = 5.0, t_max_
         return float("nan")
 
 
+def maybe_downsample_pair(t_s: np.ndarray, v: np.ndarray, max_points: int = 400) -> Tuple[np.ndarray, np.ndarray]:
+    mask = np.isfinite(t_s) & np.isfinite(v)
+    x = np.asarray(t_s[mask], dtype=float)
+    y = np.asarray(v[mask], dtype=float)
+    if len(x) <= max_points:
+        return x, y
+    idx = np.linspace(0, len(x) - 1, max_points, dtype=int)
+    return x[idx], y[idx]
+
+
 def rc_chain_relax_model(
     t: np.ndarray,
     v_inf: float,
@@ -141,13 +151,10 @@ def fit_constrained_rc_chain_relaxation(
     if least_squares is None:
         out["feat_dev_td_fit_status"] = "scipy_unavailable"
         return out
-    mask = np.isfinite(t_s) & np.isfinite(v)
-    if mask.sum() < 8:
+    x, y = maybe_downsample_pair(t_s, v, max_points=400)
+    if len(x) < 8:
         out["feat_dev_td_fit_status"] = "insufficient_points"
         return out
-
-    x = t_s[mask].astype(float)
-    y = v[mask].astype(float)
     v_inf0 = float(np.nanmedian(y[-min(5, len(y)):]))
     amp = float(y[0] - v_inf0)
     i_abs = abs(float(i_prev_a))
@@ -281,11 +288,9 @@ def fit_biexponential_relaxation(t_s: np.ndarray, v: np.ndarray) -> Dict[str, fl
     }
     if curve_fit is None:
         return out
-    mask = np.isfinite(t_s) & np.isfinite(v)
-    if mask.sum() < 8:
+    x, y = maybe_downsample_pair(t_s, v, max_points=400)
+    if len(x) < 8:
         return out
-    x = t_s[mask]
-    y = v[mask]
     v_inf0 = float(np.nanmedian(y[-min(5, len(y)):]))
     amp = float(y[0] - v_inf0)
     p0 = [v_inf0, 0.6 * amp, 20.0, 0.4 * amp, 200.0]
@@ -324,11 +329,9 @@ def fit_biexponential_warburg_relaxation(t_s: np.ndarray, v: np.ndarray) -> Dict
     }
     if curve_fit is None:
         return out
-    mask = np.isfinite(t_s) & np.isfinite(v)
-    if mask.sum() < 8:
+    x, y = maybe_downsample_pair(t_s, v, max_points=400)
+    if len(x) < 8:
         return out
-    x = t_s[mask]
-    y = v[mask]
     v_inf0 = float(np.nanmedian(y[-min(5, len(y)):]))
     amp = float(y[0] - v_inf0)
     slope0 = slope_vs_sqrt_t(x, y)
@@ -438,7 +441,12 @@ def detect_relaxation_segments(
     return segments
 
 
-def summarize_relaxation_segment(df: pd.DataFrame, seg: Dict[str, float], prior_row: Optional[pd.Series] = None) -> Dict[str, float]:
+def summarize_relaxation_segment(
+    df: pd.DataFrame,
+    seg: Dict[str, float],
+    prior_row: Optional[pd.Series] = None,
+    fit_mode: str = "full",
+) -> Dict[str, float]:
     start = int(seg["start_idx"])
     end = int(seg["end_idx"])
     sub = df.iloc[start:end].copy()
@@ -469,10 +477,29 @@ def summarize_relaxation_segment(df: pd.DataFrame, seg: Dict[str, float], prior_
         else:
             out[f"feat_dev_relax_dv_{int(sec)}s_v"] = float("nan")
 
-    fit = fit_biexponential_relaxation(t_rel, v)
-    out.update(fit)
-    joint_fit = fit_biexponential_warburg_relaxation(t_rel, v)
-    out.update(joint_fit)
+    if fit_mode == "full":
+        fit = fit_biexponential_relaxation(t_rel, v)
+        out.update(fit)
+        joint_fit = fit_biexponential_warburg_relaxation(t_rel, v)
+        out.update(joint_fit)
+    else:
+        out.update(
+            {
+                "feat_dev_v_inf_v": float("nan"),
+                "feat_dev_a1_v": float("nan"),
+                "feat_dev_tau1_s": float("nan"),
+                "feat_dev_a2_v": float("nan"),
+                "feat_dev_tau2_s": float("nan"),
+                "feat_dev_relax_fit_rmse_v": float("nan"),
+                "feat_dev_joint_v_inf_v": float("nan"),
+                "feat_dev_joint_a1_v": float("nan"),
+                "feat_dev_joint_tau1_s": float("nan"),
+                "feat_dev_joint_a2_v": float("nan"),
+                "feat_dev_joint_tau2_s": float("nan"),
+                "feat_dev_joint_B_warburg_proxy": float("nan"),
+                "feat_dev_joint_fit_rmse_v": float("nan"),
+            }
+        )
     td_fit = fit_constrained_rc_chain_relaxation(t_rel, v, seg["i_prev_a"], prior_row=prior_row)
     out.update(td_fit)
 
@@ -534,19 +561,31 @@ def extract_device_ecm_features_for_file(
     choose: str = "longest",
     prior_df: Optional[pd.DataFrame] = None,
     prior_align_mode: str = "last_le",
+    fit_mode: str = "full",
+    cycle_mode: str = "all",
 ) -> pd.DataFrame:
     df = parse_one_raw_file(path)
     if df.empty:
         return pd.DataFrame()
     serial_norm = str(df["serial_norm"].iloc[0]).strip().upper()
     out_rows: List[Dict[str, float]] = []
-    for cycle_c, sub in df.groupby("cycle_c", dropna=True, sort=True):
+    grouped = list(df.groupby("cycle_c", dropna=True, sort=True))
+    if cycle_mode == "last" and grouped:
+        grouped = [grouped[-1]]
+    elif cycle_mode == "first" and grouped:
+        grouped = [grouped[0]]
+    for cycle_c, sub in grouped:
         segs = detect_relaxation_segments(sub)
         if not segs:
             continue
         seg = max(segs, key=lambda x: x["duration_s"]) if choose == "longest" else segs[0]
         prior_row = _match_prior_row_for_cycle(serial_norm, float(cycle_c), prior_df, align_mode=prior_align_mode)
-        feat = summarize_relaxation_segment(sub.sort_values("test_time_s").reset_index(drop=True), seg, prior_row=prior_row)
+        feat = summarize_relaxation_segment(
+            sub.sort_values("test_time_s").reset_index(drop=True),
+            seg,
+            prior_row=prior_row,
+            fit_mode=fit_mode,
+        )
         if not feat:
             continue
         feat["serial_norm"] = serial_norm
@@ -675,6 +714,8 @@ def main() -> None:
     ap.add_argument("--out_csv", required=True, help="Output CSV of per-cycle device ECM proxy features.")
     ap.add_argument("--eis_prior_csv", default="", help="Optional CSV from src/build_eis_time_domain_priors.py to align onto device rows.")
     ap.add_argument("--prior_align_mode", default="last_le", choices=["last_le", "exact"], help="How to align EIS prior rows to raw-data cycle_c when --eis_prior_csv is provided.")
+    ap.add_argument("--fit_mode", default="full", choices=["full", "td_only"], help="Whether to run all exploratory fits or only the mentor-style constrained time-domain fitter.")
+    ap.add_argument("--cycle_mode", default="all", choices=["all", "first", "last"], help="Whether to extract features for all raw cycles or only one representative cycle per file.")
     ap.add_argument("--feature_table_csv", default="", help="Optional feature table to augment.")
     ap.add_argument("--out_feature_table_csv", default="", help="Optional output merged feature table.")
     ap.add_argument("--align_mode", default="last_le", choices=["last_le", "exact"], help="How to align device-cycle features to cycle_t when merging.")
@@ -700,6 +741,8 @@ def main() -> None:
                 p,
                 prior_df=prior_df,
                 prior_align_mode=args.prior_align_mode,
+                fit_mode=args.fit_mode,
+                cycle_mode=args.cycle_mode,
             )
             if not one.empty:
                 frames.append(one)
