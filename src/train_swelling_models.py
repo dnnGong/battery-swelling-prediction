@@ -309,6 +309,7 @@ def build_models(
         from sklearn.pipeline import make_pipeline
         from sklearn.preprocessing import StandardScaler
         from sklearn.decomposition import PCA
+        from sklearn.neural_network import MLPRegressor
     except Exception as e:
         raise RuntimeError(
             "scikit-learn is required. Please install it first: pip install scikit-learn"
@@ -342,6 +343,20 @@ def build_models(
             random_state=seed,
             n_jobs=-1,
         ),
+        "MLP": make_pipeline(
+            StandardScaler(),
+            MLPRegressor(
+                hidden_layer_sizes=(64, 32),
+                activation="relu",
+                solver="adam",
+                alpha=1e-4,
+                learning_rate_init=1e-3,
+                max_iter=500,
+                early_stopping=True,
+                validation_fraction=0.15,
+                random_state=seed,
+            ),
+        ),
     }
     try:
         from xgboost import XGBRegressor
@@ -364,7 +379,7 @@ def build_models(
 
     model_set_defs: Dict[str, List[str]] = {
         "basic": ["Ridge", "RandomForest", "XGBoost"],
-        "extended": ["DummyMean", "Linear", "StepwiseLinear", "Ridge", "PCR", "PLSR", "GaussianProcess", "RandomForest", "XGBoost"],
+        "extended": ["DummyMean", "Linear", "StepwiseLinear", "Ridge", "PCR", "PLSR", "GaussianProcess", "RandomForest", "XGBoost", "MLP"],
         "all": list(registry.keys()),
     }
     wanted = model_set_defs.get(model_set, list(registry.keys()))
