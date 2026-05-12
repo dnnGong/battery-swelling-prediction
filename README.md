@@ -4,20 +4,26 @@ Utilities for battery UDC Excel analysis:
 - Cycle/aging curves (`src/cycle_plot.py`)
 - EIS plotting (`src/eis_plot.py`)
 - ECM fitting (`src/ecm_fit.py`)
+- EIS-guided time-domain ECM proxy extraction from raw device data
 
 ## Project Structure
 
 - `src/`: analysis, fitting, feature engineering, modeling, and visualization scripts
   - `cycle_plot.py`, `eis_plot.py`: UDC cycle and EIS plotting utilities
   - `ecm_fit.py`: equivalent-circuit-model fitting and fit-quality logging
+  - `build_eis_time_domain_priors.py`: convert frequency-domain ECM outputs into time-domain priors (`init/lb/ub`)
   - `build_feature_table.py`: unified ML feature table builder from UDC + ECM outputs
+  - `extract_device_ecm_features.py`: extract time-domain ECM-inspired features from raw device `voltage/current/time`
   - `train_swelling_models.py`, `run_experiment_from_config.py`: classical ML/XGBoost training workflows
   - `train_swelling_deep.py`, `train_swelling_transformer.py`: optional neural-network and Transformer models
+  - `plot_raw_maccor_signals.py`: visualize raw Maccor `capacity/energy/current/voltage` signals
+  - `run_diff_soc_experiments.py`: automate multi-SOC correlation / importance experiments
   - `plot_*`, `check_*`, `filter_*`: diagnostics, correlation plots, alignment checks, feature importance, and result visualizations
 - `configs/experiments/`: JSON configs for reproducible training runs
 - `dataset/`: input UDC datasets; large/private datasets should be kept outside Git when needed
 - `data/`: generated outputs such as ECM fits, feature tables, model results, plots, and logs
 - `requirements.txt`: Python dependencies for the main analysis workflow
+- `ecm_time_domain_fitting.md`, `time_domain_report.md`: design notes and progress report for the time-domain ECM workflow
 
 ## Environment
 
@@ -26,7 +32,7 @@ Python 3.9+ is recommended.
 Install dependencies:
 
 ```bash
-pip install numpy pandas matplotlib openpyxl impedance
+pip install numpy pandas matplotlib openpyxl scipy impedance scikit-learn xgboost
 ```
 
 ## 1) cycle_plot.py
@@ -255,6 +261,12 @@ This project now includes multiple scripts for swelling prediction modeling:
 - `src/plot_ecm_dcir_cycle_coverage.py`: visualize ECM/DCIR cycle coverage per cell and in aggregate.
 - `src/parse_raw_maccor.py`: parse raw Maccor text exports (`dataset/raw_data`) and extract
   row/cycle summaries including `EVTemp (C)` / `EVHum (%)`, with optional merge into `feature_table.csv`.
+- `src/build_eis_time_domain_priors.py`: build an EIS-derived prior table for the time-domain ECM fitter
+  from `fit_result__*.json`.
+- `src/extract_device_ecm_features.py`: extract device-side time-domain ECM-inspired features from raw Maccor
+  `current/voltage/time`, with optional EIS-prior alignment and optional merge into a feature table.
+- `src/plot_raw_maccor_signals.py`: visualize raw Maccor `capacity`, `energy`, `current`, and `voltage` signals.
+- `src/run_diff_soc_experiments.py`: automate repeated build/train/correlation/permutation runs across DCIR SOC targets.
 - `src/filter_feature_table_outliers.py`: optional plug-in for outlier detection/removal on feature tables.
   Default mode is report-only (no row deletion).
 
@@ -269,6 +281,35 @@ For deep models:
 ```bash
 pip install torch
 ```
+
+### Step A0b (Optional): Build EIS-Derived Priors for Time-Domain ECM Fitting
+
+This converts `ecm_fit.py` outputs into a serial/cycle-aligned prior table that contains:
+
+- initial guesses,
+- lower bounds,
+- upper bounds,
+
+for the time-domain ECM fitter.
+
+```bash
+python src/build_eis_time_domain_priors.py \
+  --ecm_dir "./data/ecm_w_cycle" \
+  --out_csv "./data/ml/eis_time_domain_priors.csv"
+```
+
+Useful option:
+
+- `--buffer_frac`: relative margin used to expand EIS-derived values into default bounds
+
+Typical output columns include:
+
+- `prior_Rs_ohm`
+- `prior_Rsei_ohm`
+- `prior_Rdl_ohm`
+- `prior_tau_sei_s`
+- `prior_tau_dl_s`
+- and corresponding `*_init`, `*_lb`, `*_ub`
 
 ### Step A: Build Unified Feature Table
 
@@ -307,6 +348,51 @@ python src/parse_raw_maccor.py \
 ```
 
 Then use `feature_table_with_raw_temp.csv` as input to `train_swelling_models.py`.
+
+### Step A0c (Optional): Extract Device-Side Time-Domain ECM Features from Raw Data
+
+This step uses raw Maccor-like `current/voltage/time` data to fit time-domain ECM-inspired features.
+
+```bash
+python src/extract_device_ecm_features.py \
+  --raw_dir "./dataset/raw_data" \
+  --eis_prior_csv "./data/ml/eis_time_domain_priors.csv" \
+  --prior_align_mode last_le \
+  --fit_mode td_only \
+  --cycle_mode last \
+  --out_csv "./data/ml/device_ecm_with_priors.csv"
+```
+
+Useful options:
+
+- `--eis_prior_csv`: optional prior table from `build_eis_time_domain_priors.py`
+- `--prior_align_mode last_le|exact`: how to align priors to raw-data `cycle_c`
+- `--fit_mode full|td_only`
+  - `full`: exploratory fits + constrained fitter
+  - `td_only`: mentor-style constrained time-domain fitter only
+- `--cycle_mode all|first|last`: whether to keep all raw cycles or one representative cycle per file
+
+Representative outputs include:
+
+- `feat_dev_r0_proxy_ohm`
+- `feat_dev_td_Rsei_ohm`
+- `feat_dev_td_Rw1_ohm`
+- `feat_dev_td_Rw2_ohm`
+- `feat_dev_td_R_diff_total_ohm`
+- `feat_dev_td_R_total_proxy_ohm`
+- `feat_dev_td_prior_used`
+
+To merge these features directly into a feature table:
+
+```bash
+python src/extract_device_ecm_features.py \
+  --raw_dir "./dataset/raw_data" \
+  --eis_prior_csv "./data/ml/eis_time_domain_priors.csv" \
+  --out_csv "./data/ml/device_ecm_with_priors.csv" \
+  --feature_table_csv "./data/ml/feature_table.csv" \
+  --out_feature_table_csv "./data/ml/feature_table_with_device_ecm.csv" \
+  --align_mode last_le
+```
 
 ### Step A1 (Optional): Outlier Detection / Removal (Plug-in)
 
@@ -457,7 +543,7 @@ Each result CSV includes RMSE and MAE per model per group (`CL/FLC/HYCL`).
 `train_swelling_models.py` supports:
 - `--model_set basic|extended|all`
   - `basic`: Ridge + RandomForest + XGBoost(if available)
-  - `extended`: basic + Dummy + Linear + StepwiseLinear + PCR + PLSR + GaussianProcess
+  - `extended`: basic + Dummy + Linear + StepwiseLinear + PCR + PLSR + GaussianProcess + MLP
 - `--feature_set full|variance|discharge|ecm|custom`
 - `--variance_top_n` for `variance`
 - `--custom_features` for `custom`
@@ -571,6 +657,47 @@ Useful options:
 - `--hidden_dim`: Transformer `d_model` (must be divisible by `--n_heads`)
 - `--n_heads`, `--n_layers`, `--ff_dim`: Transformer architecture settings
 
+### Step B4: Visualize Raw Maccor Signals (Optional)
+
+To inspect the raw device-data source before time-domain fitting:
+
+```bash
+python src/plot_raw_maccor_signals.py \
+  --raw_dir "./dataset/raw_data/HYCL" \
+  --out_dir "./data/raw_viz"
+```
+
+Typical outputs:
+
+```text
+data/raw_viz/plots/per_file/*.png
+data/raw_viz/plots/overlay_all_files.png
+data/raw_viz/plots/overlay_by_signal/*.png
+data/raw_viz/file_signal_summary.csv
+```
+
+### Step B5: Diff-SOC Analysis (Optional)
+
+To compare DCIR/ECM behavior across multiple SOC targets:
+
+```bash
+python src/run_diff_soc_experiments.py \
+  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --ecm_dir "./data/ecm_w_cycle" \
+  --out_root "./data/diff_soc_runs" \
+  --socs "0,10,20,30,40,50,60,70,80,90,100" \
+  --n_repeats 30
+```
+
+This script automates:
+
+- feature-table building,
+- ECM-complete filtering,
+- model training,
+- permutation importance plotting,
+- correlation matrix plotting,
+- SOC-level summary export.
+
 ### How to Read ML Result Files
 
 #### `results__*.csv`
@@ -631,7 +758,7 @@ what the model discovered incrementally:
 - `cv_mae`: train-only cross-validated MAE after adding this feature
 - `improvement`: CV-MAE gain versus previous step
 
-### Step B4: Visualize Stepwise Regression
+### Step B6: Visualize Stepwise Regression
 
 If you enabled `StepwiseLinear`, you can visualize the feature-entry process:
 
@@ -806,6 +933,36 @@ print("saved:", dst)
 PY
 ```
 
+### 2c) Optional: Add device-side time-domain ECM features
+
+This branch keeps the existing lab-side feature table, but augments it with
+time-domain ECM-inspired features extracted from raw device data.
+
+1. Build EIS-derived priors:
+
+```bash
+python src/build_eis_time_domain_priors.py \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_csv "./data/ml/eis_time_domain_priors.csv"
+```
+
+2. Extract device-side time-domain features and merge them directly into the feature table:
+
+```bash
+python src/extract_device_ecm_features.py \
+  --raw_dir "./dataset/raw_data" \
+  --eis_prior_csv "./data/ml/eis_time_domain_priors.csv" \
+  --prior_align_mode last_le \
+  --fit_mode td_only \
+  --cycle_mode last \
+  --out_csv "./data/ml/device_ecm_with_priors.csv" \
+  --feature_table_csv "./data/ml/feature_table_ecm_complete.csv" \
+  --out_feature_table_csv "./data/ml/feature_table_ecm_complete_with_device.csv" \
+  --align_mode last_le
+```
+
+Then use `feature_table_ecm_complete_with_device.csv` in downstream training.
+
 ### 3) Train a tuned XGBoost experiment from config
 
 ```bash
@@ -838,6 +995,25 @@ python src/train_swelling_models.py \
   --xgb_reg_lambda 2.0 \
   --run_tag "xgb_t11_lighter_reg" \
   --log_file "./data/logs/xgb_t11_lighter_reg.log"
+```
+
+If you want to include the device-side time-domain ECM branch as additional features:
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table_ecm_complete_with_device.csv" \
+  --out_dir "./data/ml/experiments/xgb_td_device" \
+  --target_mode current \
+  --sample_mode rowwise \
+  --label_mode absolute \
+  --target_transform log \
+  --max_input_cycle 120 \
+  --model_set basic \
+  --models "XGBoost" \
+  --feature_set custom \
+  --custom_features "feat_cycle_t,feat_Rs_ohm,feat_nsei,feat_ndl,feat_R_total_ohm,feat_sigma,feat_capacity_t,feat_capacity_slope_10,feat_dcir_soc_t,feat_dev_td_R_total_proxy_ohm,feat_dev_td_prior_used" \
+  --run_tag "xgb_td_device" \
+  --log_file "./data/logs/xgb_td_device.log"
 ```
 
 ### 4) Permutation importance
