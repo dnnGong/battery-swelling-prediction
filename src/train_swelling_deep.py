@@ -45,6 +45,16 @@ def pick_rows_future_delta_TK(df: pd.DataFrame, max_input_cycle: int) -> pd.Data
     return sub
 
 
+def pick_rows_current_cycle(df: pd.DataFrame, max_input_cycle: int) -> pd.DataFrame:
+    sub = df[df["cycle_t"] <= max_input_cycle].copy()
+    if sub.empty:
+        return sub
+    sub["target_abs"] = sub["y_abs_thickness_t"].astype(float)
+    sub["target_delta"] = sub["y_delta_thickness_baseline_t"].astype(float)
+    sub["target_cycle"] = sub["cycle_t"].astype(int)
+    return sub
+
+
 def train_test_group_split(df: pd.DataFrame, test_size: float, seed: int) -> Tuple[np.ndarray, np.ndarray]:
     from sklearn.model_selection import GroupShuffleSplit
 
@@ -311,7 +321,7 @@ def main() -> None:
     )
     ap.add_argument("--table_csv", required=True)
     ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--target_mode", choices=["fixed_T", "future_delta_TK"], required=True)
+    ap.add_argument("--target_mode", choices=["current", "fixed_T", "future_delta_TK"], required=True)
     ap.add_argument("--label_mode", choices=["absolute", "delta"], required=True)
     ap.add_argument("--T", type=int, default=100)
     ap.add_argument("--future_k", type=int, default=20)
@@ -346,7 +356,10 @@ def main() -> None:
     if df.empty:
         raise ValueError("Input table is empty.")
 
-    if args.target_mode == "fixed_T":
+    if args.target_mode == "current":
+        data = pick_rows_current_cycle(df, max_input_cycle=args.max_input_cycle)
+        mode_tag = "current_cycle"
+    elif args.target_mode == "fixed_T":
         data = pick_anchor_rows_fixed_T(df, T=args.T, max_input_cycle=args.max_input_cycle)
         mode_tag = f"fixedT_{args.T}"
     else:
