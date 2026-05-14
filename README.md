@@ -353,6 +353,32 @@ Then use `feature_table_with_raw_temp.csv` as input to `train_swelling_models.py
 
 This step uses raw Maccor-like `current/voltage/time` data to fit time-domain ECM-inspired features.
 
+The simplified time-domain ECM used in this branch is:
+
+```text
+Vocv - R0 - (RSEI || CSEI) - RCT - (R1 || C1) - (R2 || C2)
+```
+
+ASCII sketch:
+
+```text
+Vocv
+  +
+  |
+  o---[ R0 ]---+---[ RSEI ]---+---[ RCT ]---+---[ R1 ]---+---[ R2 ]---o Vt
+               |              |              |            |            |
+               +----|| CSEI---+              +----|| C1---+----|| C2---+
+  |
+ GND
+```
+
+Here:
+
+- `R0` captures the instantaneous ohmic contribution,
+- `RSEI || CSEI` captures a fast SEI-related relaxation branch,
+- `RCT` is a charge-transfer-related resistive term,
+- `(R1 || C1)` and `(R2 || C2)` are a small RC-chain approximation of the diffusion / Warburg-like tail.
+
 ```bash
 python src/extract_device_ecm_features.py \
   --raw_dir "./dataset/raw_data" \
