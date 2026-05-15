@@ -227,6 +227,22 @@ def auto_guess_from_circuit(circuit: str, freq: np.ndarray, zre: np.ndarray) -> 
             base += [0.01, 1.0]
         return base
 
+    if c.startswith("r0-p(r1,c1)-r2-p(r3,c2)-p(r4,c3)"):
+        f_hi = float(np.nanpercentile(freq, 80))
+        f_mid = float(np.nanpercentile(freq, 45))
+        f_lo = float(np.nanpercentile(freq, 12))
+        f_hi = max(f_hi, 1e-6)
+        f_mid = max(f_mid, 1e-6)
+        f_lo = max(f_lo, 1e-6)
+        r_ct = 0.15 * dR
+        r_sei = 0.20 * dR
+        r_w1 = 0.35 * dR
+        r_w2 = 0.30 * dR
+        c_sei = 1.0 / (2.0 * np.pi * max(r_sei, 1e-12) * f_hi)
+        c_w1 = 1.0 / (2.0 * np.pi * max(r_w1, 1e-12) * f_mid)
+        c_w2 = 1.0 / (2.0 * np.pi * max(r_w2, 1e-12) * f_lo)
+        return [r0, r_sei, c_sei, r_ct, r_w1, c_w1, r_w2, c_w2]
+
     # Default to 2-RC.
     c1 = 1.0 / (2.0 * np.pi * max(r1, 1e-12) * f1)
     c2 = 1.0 / (2.0 * np.pi * max(r2, 1e-12) * f2)
@@ -253,6 +269,21 @@ def apply_warburg_to_circuit(base_circuit: str, warburg: str) -> str:
     if w == "ws":
         return f"{base_circuit}-Ws1"
     raise ValueError(f"Unsupported warburg mode: {warburg}")
+
+
+def resolve_circuit_spec(
+    circuit_family: str,
+    circuit: str,
+    warburg: str,
+) -> Tuple[str, str]:
+    family = (circuit_family or "legacy").strip().lower()
+    if family == "td_compatible":
+        if (warburg or "none").strip().lower() != "none":
+            print("[WARN] Ignoring --warburg for circuit_family=td_compatible; the RC-chain already approximates the diffusion tail.")
+        return "R0-p(R1,C1)-R2-p(R3,C2)-p(R4,C3)", "td_compatible"
+
+    base = circuit or "R0-p(R1,C1)-p(R2,C2)"
+    return apply_warburg_to_circuit(base, warburg), "legacy"
 
 
 def collect_xlsx_files(
@@ -985,6 +1016,15 @@ def main():
     ap.add_argument("--assume_mohm", action="store_true", help="Assume Real/Imag numeric values are in mOhm and convert to Ohm.")
 
     # no-Warburg default: 2-CPE often fits battery arcs better than ideal 2-RC
+    ap.add_argument(
+        "--circuit_family",
+        default="legacy",
+        choices=["legacy", "td_compatible"],
+        help=(
+            "Circuit family selector. legacy keeps the original frequency-domain model path; "
+            "td_compatible switches to a mentor-style RC-chain circuit that is easier to reuse as a time-domain prior source."
+        ),
+    )
     ap.add_argument("--circuit", default="R0-p(R1,CPE1)-p(R2,CPE2)", help="Base ECM topology before optional Warburg append.")
     ap.add_argument("--warburg", default="none", choices=["none", "W", "Wo", "Ws"], help="Append a Warburg element to circuit tail.")
     ap.add_argument("--guess", default="", help="Comma-separated initial guess. Empty -> auto guess from data.")
@@ -1236,8 +1276,9 @@ def main():
                         sign_mode = "imag=-raw (forced)"
 
                 # 5) build initial guess
-                    circuit = apply_warburg_to_circuit(
-                        args.circuit or "R0-p(R1,C1)-p(R2,C2)",
+                    circuit, circuit_family_used = resolve_circuit_spec(
+                        args.circuit_family,
+                        args.circuit,
                         args.warburg,
                     )
                     if args.guess.strip():
@@ -1293,6 +1334,7 @@ def main():
                         "sheet": str(sheet_used),
                         "measurement_basis": meas_meta.get("measurement_basis"),
                         "measurement_cycle": meas_meta.get("measurement_cycle"),
+                        "circuit_family": str(circuit_family_used),
                         "requested_block": int(requested_block),
                         "chosen_block": int(chosen_block),
                         "raw_col_indices": {
@@ -1340,6 +1382,7 @@ def main():
                             "requested_block": int(requested_block),
                             "chosen_block": int(chosen_block),
                             "measurement_cycle": meas_meta.get("measurement_cycle"),
+                            "circuit_family": str(circuit_family_used),
                             "status": "ok",
                             "rmse_complex_ohm": float(rmse),
                             "done_tasks": int(done_cnt),
