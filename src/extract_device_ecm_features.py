@@ -129,6 +129,107 @@ def _match_prior_row_for_cycle(
     return sub.iloc[0]
 
 
+def _build_global_prior_row(
+    prior_df: Optional[pd.DataFrame],
+    group_tag: Optional[str] = None,
+) -> Optional[pd.Series]:
+    if prior_df is None or prior_df.empty:
+        return None
+    sub = prior_df.copy()
+    if group_tag and "group_tag" in sub.columns:
+        same_group = sub[sub["group_tag"].astype(str).str.upper() == str(group_tag).strip().upper()].copy()
+        if not same_group.empty:
+            sub = same_group
+    if sub.empty:
+        return None
+
+    out: Dict[str, object] = {
+        "serial": "__GLOBAL__",
+        "serial_norm": "__GLOBAL__",
+        "measurement_cycle": float("nan"),
+        "sheet": "GLOBAL",
+        "circuit": str(sub["circuit"].dropna().iloc[0]) if "circuit" in sub.columns and sub["circuit"].notna().any() else "",
+        "circuit_family": str(sub["circuit_family"].dropna().iloc[0]) if "circuit_family" in sub.columns and sub["circuit_family"].notna().any() else "",
+        "group_tag": str(group_tag or ""),
+    }
+
+    for col in sub.columns:
+        if not str(col).startswith("prior_"):
+            continue
+        vals = pd.to_numeric(sub[col], errors="coerce")
+        vals = vals[np.isfinite(vals)]
+        if vals.empty:
+            out[col] = float("nan")
+            continue
+        if col.endswith("_lb"):
+            out[col] = float(vals.quantile(0.10))
+        elif col.endswith("_ub"):
+            out[col] = float(vals.quantile(0.90))
+        else:
+            out[col] = float(vals.median())
+    return pd.Series(out)
+
+
+def _select_prior_row(
+    serial_norm: str,
+    cycle_c: float,
+    prior_df: Optional[pd.DataFrame],
+    align_mode: str = "last_le",
+    prior_mode: str = "serial_cycle",
+    group_tag: Optional[str] = None,
+) -> Optional[pd.Series]:
+    mode = (prior_mode or "serial_cycle").strip().lower()
+    if mode == "none":
+        return None
+    if prior_df is None or prior_df.empty:
+        return None
+    if mode == "global":
+        return _build_global_prior_row(prior_df, group_tag=group_tag)
+
+    if mode == "serial_only":
+        pri = prior_df.copy()
+        pri["serial_norm"] = pri["serial_norm"].astype(str).str.strip().str.upper()
+        sub = pri[pri["serial_norm"] == str(serial_norm).strip().upper()].copy()
+        if sub.empty:
+            return None
+        cyc_rows = sub[pd.notna(pd.to_numeric(sub.get("measurement_cycle"), errors="coerce"))].copy()
+        if not cyc_rows.empty:
+            cyc_rows["measurement_cycle_num"] = pd.to_numeric(cyc_rows["measurement_cycle"], errors="coerce")
+            return cyc_rows.sort_values("measurement_cycle_num").iloc[-1]
+        return sub.iloc[0]
+
+    return _match_prior_row_for_cycle(serial_norm, cycle_c, prior_df, align_mode=align_mode)
+
+
+def add_td_component_aliases(out: Dict[str, float]) -> Dict[str, float]:
+    """
+    Promote mentor-aligned component names while keeping older field names alive.
+    """
+    mapping = {
+        "feat_dev_td_a_Rsei_v": "feat_dev_td_a_RSEI_v",
+        "feat_dev_td_tau_Rsei_s": "feat_dev_td_tau_RSEI_s",
+        "feat_dev_td_a_Rw1_v": "feat_dev_td_a_R1_v",
+        "feat_dev_td_tau_Rw1_s": "feat_dev_td_tau_R1_s",
+        "feat_dev_td_a_Rw2_v": "feat_dev_td_a_R2_v",
+        "feat_dev_td_tau_Rw2_s": "feat_dev_td_tau_R2_s",
+        "feat_dev_td_Rsei_ohm": "feat_dev_td_RSEI_ohm",
+        "feat_dev_td_Rw1_ohm": "feat_dev_td_R1_ohm",
+        "feat_dev_td_Rw2_ohm": "feat_dev_td_R2_ohm",
+        "feat_dev_td_a_Rsei_v": "feat_dev_td_a_sei_v",
+        "feat_dev_td_tau_Rsei_s": "feat_dev_td_tau_sei_s",
+        "feat_dev_td_a_Rw1_v": "feat_dev_td_a_w1_v",
+        "feat_dev_td_tau_Rw1_s": "feat_dev_td_tau_w1_s",
+        "feat_dev_td_a_Rw2_v": "feat_dev_td_a_w2_v",
+        "feat_dev_td_tau_Rw2_s": "feat_dev_td_tau_w2_s",
+    }
+    for new_key, old_key in mapping.items():
+        if new_key in out and old_key not in out:
+            out[old_key] = out[new_key]
+        elif old_key in out and new_key not in out:
+            out[new_key] = out[old_key]
+    return out
+
+
 def fit_constrained_rc_chain_relaxation(
     t_s: np.ndarray,
     v: np.ndarray,
@@ -137,12 +238,12 @@ def fit_constrained_rc_chain_relaxation(
 ) -> Dict[str, float]:
     out = {
         "feat_dev_td_v_inf_v": float("nan"),
-        "feat_dev_td_a_sei_v": float("nan"),
-        "feat_dev_td_tau_sei_s": float("nan"),
-        "feat_dev_td_a_w1_v": float("nan"),
-        "feat_dev_td_tau_w1_s": float("nan"),
-        "feat_dev_td_a_w2_v": float("nan"),
-        "feat_dev_td_tau_w2_s": float("nan"),
+        "feat_dev_td_a_Rsei_v": float("nan"),
+        "feat_dev_td_tau_Rsei_s": float("nan"),
+        "feat_dev_td_a_Rw1_v": float("nan"),
+        "feat_dev_td_tau_Rw1_s": float("nan"),
+        "feat_dev_td_a_Rw2_v": float("nan"),
+        "feat_dev_td_tau_Rw2_s": float("nan"),
         "feat_dev_td_fit_rmse_v": float("nan"),
         "feat_dev_td_fit_status": "not_run",
         "feat_dev_td_prior_used": 0.0,
@@ -172,37 +273,65 @@ def fit_constrained_rc_chain_relaxation(
     if prior_row is not None:
         prior_cycle_used = _finite_or(prior_row.get("measurement_cycle", np.nan), np.nan)
         rsei_guess, rsei_lb, rsei_ub = _bounded_triplet(
-            prior_row.get("prior_Rsei_init", np.nan),
-            prior_row.get("prior_Rsei_lb", np.nan),
-            prior_row.get("prior_Rsei_ub", np.nan),
+            prior_row.get("prior_Rsei_init", prior_row.get("prior_RSEI_init", np.nan)),
+            prior_row.get("prior_Rsei_lb", prior_row.get("prior_RSEI_lb", np.nan)),
+            prior_row.get("prior_Rsei_ub", prior_row.get("prior_RSEI_ub", np.nan)),
             max(1e-6, 0.25 * rsei_guess),
             max(1e-5, 4.0 * rsei_guess),
         )
         tau_sei_guess, tau_sei_lb, tau_sei_ub = _bounded_triplet(
-            prior_row.get("prior_tau_sei_init", np.nan),
-            prior_row.get("prior_tau_sei_lb", np.nan),
-            prior_row.get("prior_tau_sei_ub", np.nan),
+            prior_row.get("prior_tau_Rsei_init", prior_row.get("prior_tau_RSEI_init", prior_row.get("prior_tau_sei_init", np.nan))),
+            prior_row.get("prior_tau_Rsei_lb", prior_row.get("prior_tau_RSEI_lb", prior_row.get("prior_tau_sei_lb", np.nan))),
+            prior_row.get("prior_tau_Rsei_ub", prior_row.get("prior_tau_RSEI_ub", prior_row.get("prior_tau_sei_ub", np.nan))),
             1e-3,
             2_000.0,
         )
-        rdl_init = _finite_or(prior_row.get("prior_Rdl_init", np.nan), np.nan)
-        rdl_lb = _finite_or(prior_row.get("prior_Rdl_lb", np.nan), np.nan)
-        rdl_ub = _finite_or(prior_row.get("prior_Rdl_ub", np.nan), np.nan)
-        if np.isfinite(rdl_init):
-            rw1_guess = 0.6 * rdl_init
-            rw2_guess = 0.4 * rdl_init
-        if np.isfinite(rdl_lb) and np.isfinite(rdl_ub):
-            rw1_lb, rw1_ub = max(1e-8, 0.25 * rdl_lb), max(1e-7, 1.2 * rdl_ub)
-            rw2_lb, rw2_ub = max(1e-8, 0.10 * rdl_lb), max(1e-7, 1.2 * rdl_ub)
+        rw1_init = _finite_or(prior_row.get("prior_Rw1_init", prior_row.get("prior_R1_init", np.nan)), np.nan)
+        rw1_lbp = _finite_or(prior_row.get("prior_Rw1_lb", prior_row.get("prior_R1_lb", np.nan)), np.nan)
+        rw1_ubp = _finite_or(prior_row.get("prior_Rw1_ub", prior_row.get("prior_R1_ub", np.nan)), np.nan)
+        rw2_init = _finite_or(prior_row.get("prior_Rw2_init", prior_row.get("prior_R2_init", np.nan)), np.nan)
+        rw2_lbp = _finite_or(prior_row.get("prior_Rw2_lb", prior_row.get("prior_R2_lb", np.nan)), np.nan)
+        rw2_ubp = _finite_or(prior_row.get("prior_Rw2_ub", prior_row.get("prior_R2_ub", np.nan)), np.nan)
+
+        if np.isfinite(rw1_init):
+            rw1_guess = rw1_init
+        if np.isfinite(rw2_init):
+            rw2_guess = rw2_init
+
+        if np.isfinite(rw1_lbp) and np.isfinite(rw1_ubp):
+            rw1_lb, rw1_ub = max(1e-8, rw1_lbp), max(1e-7, rw1_ubp)
         else:
-            rw1_lb, rw1_ub = max(1e-8, 0.25 * rw1_guess), max(1e-7, 4.0 * rw1_guess)
-            rw2_lb, rw2_ub = max(1e-8, 0.25 * rw2_guess), max(1e-7, 4.0 * rw2_guess)
-        tau_dl_init = _finite_or(prior_row.get("prior_tau_dl_init", np.nan), np.nan)
-        if np.isfinite(tau_dl_init):
-            tau_w1_guess = max(5.0, 0.3 * tau_dl_init)
-            tau_w2_guess = max(20.0, 1.2 * tau_dl_init)
-        tau_w1_lb, tau_w1_ub = 5.0, 5_000.0
-        tau_w2_lb, tau_w2_ub = 20.0, 50_000.0
+            rdl_lb = _finite_or(prior_row.get("prior_Rdl_lb", np.nan), np.nan)
+            rdl_ub = _finite_or(prior_row.get("prior_Rdl_ub", np.nan), np.nan)
+            if np.isfinite(rdl_lb) and np.isfinite(rdl_ub):
+                rw1_lb, rw1_ub = max(1e-8, 0.25 * rdl_lb), max(1e-7, 1.2 * rdl_ub)
+            else:
+                rw1_lb, rw1_ub = max(1e-8, 0.25 * rw1_guess), max(1e-7, 4.0 * rw1_guess)
+
+        if np.isfinite(rw2_lbp) and np.isfinite(rw2_ubp):
+            rw2_lb, rw2_ub = max(1e-8, rw2_lbp), max(1e-7, rw2_ubp)
+        else:
+            rdl_lb = _finite_or(prior_row.get("prior_Rdl_lb", np.nan), np.nan)
+            rdl_ub = _finite_or(prior_row.get("prior_Rdl_ub", np.nan), np.nan)
+            if np.isfinite(rdl_lb) and np.isfinite(rdl_ub):
+                rw2_lb, rw2_ub = max(1e-8, 0.10 * rdl_lb), max(1e-7, 1.2 * rdl_ub)
+            else:
+                rw2_lb, rw2_ub = max(1e-8, 0.25 * rw2_guess), max(1e-7, 4.0 * rw2_guess)
+
+        tau_w1_guess, tau_w1_lb, tau_w1_ub = _bounded_triplet(
+            prior_row.get("prior_tau_Rw1_init", prior_row.get("prior_tau_R1_init", prior_row.get("prior_tau_w1_init", prior_row.get("prior_tau_dl_init", np.nan)))),
+            prior_row.get("prior_tau_Rw1_lb", prior_row.get("prior_tau_R1_lb", prior_row.get("prior_tau_w1_lb", np.nan))),
+            prior_row.get("prior_tau_Rw1_ub", prior_row.get("prior_tau_R1_ub", prior_row.get("prior_tau_w1_ub", np.nan))),
+            5.0,
+            5_000.0,
+        )
+        tau_w2_guess, tau_w2_lb, tau_w2_ub = _bounded_triplet(
+            prior_row.get("prior_tau_Rw2_init", prior_row.get("prior_tau_R2_init", prior_row.get("prior_tau_w2_init", prior_row.get("prior_tau_dl_init", np.nan)))),
+            prior_row.get("prior_tau_Rw2_lb", prior_row.get("prior_tau_R2_lb", prior_row.get("prior_tau_w2_lb", np.nan))),
+            prior_row.get("prior_tau_Rw2_ub", prior_row.get("prior_tau_R2_ub", prior_row.get("prior_tau_w2_ub", np.nan))),
+            20.0,
+            50_000.0,
+        )
         out["feat_dev_td_prior_used"] = 1.0
         out["feat_dev_td_prior_cycle_used"] = prior_cycle_used
     else:
@@ -262,19 +391,19 @@ def fit_constrained_rc_chain_relaxation(
         out.update(
             {
                 "feat_dev_td_v_inf_v": float(res.x[0]),
-                "feat_dev_td_a_sei_v": float(res.x[1]),
-                "feat_dev_td_tau_sei_s": float(res.x[2]),
-                "feat_dev_td_a_w1_v": float(res.x[3]),
-                "feat_dev_td_tau_w1_s": float(res.x[4]),
-                "feat_dev_td_a_w2_v": float(res.x[5]),
-                "feat_dev_td_tau_w2_s": float(res.x[6]),
+                "feat_dev_td_a_Rsei_v": float(res.x[1]),
+                "feat_dev_td_tau_Rsei_s": float(res.x[2]),
+                "feat_dev_td_a_Rw1_v": float(res.x[3]),
+                "feat_dev_td_tau_Rw1_s": float(res.x[4]),
+                "feat_dev_td_a_Rw2_v": float(res.x[5]),
+                "feat_dev_td_tau_Rw2_s": float(res.x[6]),
                 "feat_dev_td_fit_rmse_v": rmse,
                 "feat_dev_td_fit_status": str(res.status),
             }
         )
     except Exception:
         out["feat_dev_td_fit_status"] = "fit_failed"
-    return out
+    return add_td_component_aliases(out)
 
 
 def fit_biexponential_relaxation(t_s: np.ndarray, v: np.ndarray) -> Dict[str, float]:
@@ -527,9 +656,9 @@ def summarize_relaxation_segment(
         ]
         joint_rvals = [float(x) for x in joint_rvals if np.isfinite(x)]
         out["feat_dev_joint_R_total_proxy_ohm"] = float(sum(joint_rvals)) if joint_rvals else float("nan")
-        out["feat_dev_td_Rsei_ohm"] = float(abs(out["feat_dev_td_a_sei_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_sei_v", np.nan)) else float("nan")
-        out["feat_dev_td_Rw1_ohm"] = float(abs(out["feat_dev_td_a_w1_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_w1_v", np.nan)) else float("nan")
-        out["feat_dev_td_Rw2_ohm"] = float(abs(out["feat_dev_td_a_w2_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_w2_v", np.nan)) else float("nan")
+        out["feat_dev_td_Rsei_ohm"] = float(abs(out["feat_dev_td_a_Rsei_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_Rsei_v", np.nan)) else float("nan")
+        out["feat_dev_td_Rw1_ohm"] = float(abs(out["feat_dev_td_a_Rw1_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_Rw1_v", np.nan)) else float("nan")
+        out["feat_dev_td_Rw2_ohm"] = float(abs(out["feat_dev_td_a_Rw2_v"]) / i_abs) if np.isfinite(out.get("feat_dev_td_a_Rw2_v", np.nan)) else float("nan")
         td_rvals = [
             out.get("feat_dev_r0_proxy_ohm", np.nan),
             out.get("feat_dev_td_Rsei_ohm", np.nan),
@@ -553,7 +682,7 @@ def summarize_relaxation_segment(
         out["feat_dev_td_Rw2_ohm"] = float("nan")
         out["feat_dev_td_R_diff_total_ohm"] = float("nan")
         out["feat_dev_td_R_total_proxy_ohm"] = float("nan")
-    return out
+    return add_td_component_aliases(out)
 
 
 def extract_device_ecm_features_for_file(
@@ -561,6 +690,7 @@ def extract_device_ecm_features_for_file(
     choose: str = "longest",
     prior_df: Optional[pd.DataFrame] = None,
     prior_align_mode: str = "last_le",
+    prior_mode: str = "serial_cycle",
     fit_mode: str = "full",
     cycle_mode: str = "all",
 ) -> pd.DataFrame:
@@ -579,7 +709,14 @@ def extract_device_ecm_features_for_file(
         if not segs:
             continue
         seg = max(segs, key=lambda x: x["duration_s"]) if choose == "longest" else segs[0]
-        prior_row = _match_prior_row_for_cycle(serial_norm, float(cycle_c), prior_df, align_mode=prior_align_mode)
+        prior_row = _select_prior_row(
+            serial_norm,
+            float(cycle_c),
+            prior_df,
+            align_mode=prior_align_mode,
+            prior_mode=prior_mode,
+            group_tag=str(df["group_tag"].iloc[0]),
+        )
         feat = summarize_relaxation_segment(
             sub.sort_values("test_time_s").reset_index(drop=True),
             seg,
@@ -643,9 +780,48 @@ def merge_device_ecm_features(feature_df: pd.DataFrame, device_df: pd.DataFrame,
     return merged
 
 
-def merge_eis_time_domain_priors(device_df: pd.DataFrame, prior_df: pd.DataFrame, align_mode: str = "last_le") -> pd.DataFrame:
+def merge_eis_time_domain_priors(
+    device_df: pd.DataFrame,
+    prior_df: pd.DataFrame,
+    align_mode: str = "last_le",
+    prior_mode: str = "serial_cycle",
+) -> pd.DataFrame:
     if device_df.empty or prior_df.empty:
         return device_df.copy()
+
+    mode = (prior_mode or "serial_cycle").strip().lower()
+    if mode == "none":
+        return device_df.copy()
+    if mode == "global":
+        work = device_df.copy()
+        all_prior_cols = [c for c in prior_df.columns if str(c).startswith("prior_")] + ["measurement_cycle", "sheet", "circuit", "circuit_family", "rmse_complex_ohm"]
+        if "group_tag" in work.columns:
+            frames: List[pd.DataFrame] = []
+            for group_tag, sub_dev in work.groupby("group_tag", dropna=False, sort=False):
+                pri = _build_global_prior_row(prior_df, group_tag=str(group_tag))
+                sub_copy = sub_dev.copy()
+                if pri is not None:
+                    for c in all_prior_cols:
+                        if c in pri.index:
+                            sub_copy[c] = pri.get(c)
+                frames.append(sub_copy)
+            return pd.concat(frames, ignore_index=True, sort=False)
+        pri = _build_global_prior_row(prior_df, group_tag=None)
+        if pri is None:
+            return work
+        for c in all_prior_cols:
+            if c in pri.index:
+                work[c] = pri.get(c)
+        return work
+    if mode == "serial_only":
+        work = device_df.copy()
+        work["serial_norm"] = work["serial_norm"].astype(str).str.strip().str.upper()
+        pri = prior_df.copy()
+        pri["serial_norm"] = pri["serial_norm"].astype(str).str.strip().str.upper()
+        pri["measurement_cycle_num"] = pd.to_numeric(pri.get("measurement_cycle"), errors="coerce")
+        pri = pri.sort_values(["serial_norm", "measurement_cycle_num"], na_position="last")
+        pri = pri.groupby("serial_norm", as_index=False).tail(1)
+        return work.merge(pri.drop(columns=["measurement_cycle_num"], errors="ignore"), on="serial_norm", how="left", suffixes=("", "_prior"))
 
     work = device_df.copy()
     work["_rowid"] = np.arange(len(work))
@@ -713,6 +889,16 @@ def main() -> None:
     ap.add_argument("--raw_dir", required=True, help="Directory containing raw Maccor files.")
     ap.add_argument("--out_csv", required=True, help="Output CSV of per-cycle device ECM proxy features.")
     ap.add_argument("--eis_prior_csv", default="", help="Optional CSV from src/build_eis_time_domain_priors.py to align onto device rows.")
+    ap.add_argument(
+        "--prior_mode",
+        default="serial_cycle",
+        choices=["serial_cycle", "serial_only", "global", "none"],
+        help=(
+            "How to use frequency-domain priors for time-domain fitting: "
+            "serial_cycle matches by serial+cycle, serial_only ignores cycle, "
+            "global uses group-level aggregate bounds, none disables priors."
+        ),
+    )
     ap.add_argument("--prior_align_mode", default="last_le", choices=["last_le", "exact"], help="How to align EIS prior rows to raw-data cycle_c when --eis_prior_csv is provided.")
     ap.add_argument("--fit_mode", default="full", choices=["full", "td_only"], help="Whether to run all exploratory fits or only the mentor-style constrained time-domain fitter.")
     ap.add_argument("--cycle_mode", default="all", choices=["all", "first", "last"], help="Whether to extract features for all raw cycles or only one representative cycle per file.")
@@ -741,6 +927,7 @@ def main() -> None:
                 p,
                 prior_df=prior_df,
                 prior_align_mode=args.prior_align_mode,
+                prior_mode=args.prior_mode,
                 fit_mode=args.fit_mode,
                 cycle_mode=args.cycle_mode,
             )
@@ -751,7 +938,12 @@ def main() -> None:
 
     out_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if prior_df is not None:
-        out_df = merge_eis_time_domain_priors(out_df, prior_df, align_mode=args.prior_align_mode)
+        out_df = merge_eis_time_domain_priors(
+            out_df,
+            prior_df,
+            align_mode=args.prior_align_mode,
+            prior_mode=args.prior_mode,
+        )
         print(f"[INFO] Merged EIS time-domain priors from: {args.eis_prior_csv}")
 
     out_path = Path(args.out_csv)
