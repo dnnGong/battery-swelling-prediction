@@ -306,9 +306,12 @@ Typical output columns include:
 
 - `prior_Rs_ohm`
 - `prior_Rsei_ohm`
-- `prior_Rdl_ohm`
-- `prior_tau_sei_s`
-- `prior_tau_dl_s`
+- `prior_Rct_ohm`
+- `prior_Rw1_ohm`
+- `prior_Rw2_ohm`
+- `prior_tau_Rsei_s`
+- `prior_tau_Rw1_s`
+- `prior_tau_Rw2_s`
 - and corresponding `*_init`, `*_lb`, `*_ub`
 
 ### Step A: Build Unified Feature Table
@@ -356,7 +359,7 @@ This step uses raw Maccor-like `current/voltage/time` data to fit time-domain EC
 The simplified time-domain ECM used in this branch is:
 
 ```text
-Vocv - R0 - (RSEI || CSEI) - RCT - (R1 || C1) - (R2 || C2)
+Vocv - R0 - (Rsei || Csei) - Rct - (Rw1 || Cw1) - (Rw2 || Cw2)
 ```
 
 ASCII sketch:
@@ -365,9 +368,9 @@ ASCII sketch:
 Vocv
   +
   |
-  o---[ R0 ]---+---[ RSEI ]---+---[ RCT ]---+---[ R1 ]---+---[ R2 ]---o Vt
+  o---[ R0 ]---+---[ Rsei ]---+---[ Rct ]---+---[ Rw1 ]---+---[ Rw2 ]---o Vt
                |              |              |            |            |
-               +----|| CSEI---+              +----|| C1---+----|| C2---+
+               +----|| Csei---+              +----|| Cw1--+----|| Cw2--+
   |
  GND
 ```
@@ -375,9 +378,9 @@ Vocv
 Here:
 
 - `R0` captures the instantaneous ohmic contribution,
-- `RSEI || CSEI` captures a fast SEI-related relaxation branch,
-- `RCT` is a charge-transfer-related resistive term,
-- `(R1 || C1)` and `(R2 || C2)` are a small RC-chain approximation of the diffusion / Warburg-like tail.
+- `Rsei || Csei` captures a fast SEI-related relaxation branch,
+- `Rct` is a charge-transfer-related resistive term,
+- `(Rw1 || Cw1)` and `(Rw2 || Cw2)` are a small RC-chain approximation of the diffusion / Warburg-like tail.
 
 ```bash
 python src/extract_device_ecm_features.py \
