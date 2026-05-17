@@ -1,18 +1,186 @@
 # battery-swelling-prediction
 
-Utilities for battery UDC Excel analysis:
-- Cycle/aging curves (`src/cycle_plot.py`)
-- EIS plotting (`src/eis_plot.py`)
-- ECM fitting (`src/ecm_fit.py`)
-- EIS-guided time-domain ECM proxy extraction from raw device data
+Battery swelling / thickness prediction workflows built around two complementary data sources:
+
+- **workbook-style battery test datasets**: cycle, thickness, DCIR, OCV, ACIR, and EIS measurements
+- **raw device / tester exports**: high-resolution `current / voltage / time` signals used for time-domain feature extraction
+
+This repo supports three main tasks:
+
+1. **frequency-domain ECM fitting** from EIS data
+2. **time-domain ECM-inspired feature extraction** from raw device data
+3. **swelling / thickness prediction** with classical ML, neural networks, and Transformers
+
+## What This Repo Is For
+
+At a high level, the project answers:
+
+- how well lab-side EIS-derived ECM features track battery swelling
+- whether raw device-side time-domain signals can provide deployable ECM-like features
+- how those features perform in downstream thickness prediction models
+
+There are two important modeling settings in this repo:
+
+- **Hybrid / research setting**: lab-side frequency-domain ECM features and device-side time-domain features can both be used
+- **Device-oriented setting**: only device-observable features are used as model inputs; frequency-domain ECM is used only offline to help define priors / bounds
+
+## Data Types
+
+This README intentionally uses **generic dataset names** rather than any one local folder layout.
+
+### 1) Workbook dataset
+
+This is the structured Excel-style dataset that usually contains:
+
+- thickness labels
+- cycle-level summaries
+- DCIR / ACIR / OCV
+- EIS sheets such as `02_PreEIS`, `03-4_EIS`, `04_PostEIS`
+
+In commands below, this is usually referenced as:
+
+```text
+./dataset/udc_xlsx
+```
+
+### 2) Raw device dataset
+
+This is the raw tester / Maccor-style dataset that usually contains:
+
+- `current`
+- `voltage`
+- `capacity`
+- `energy`
+- `test time`
+- `cycle` / step-level information
+
+In commands below, this is usually referenced as:
+
+```text
+./dataset/raw_data
+```
+
+### Why Both Matter
+
+- The **workbook dataset** provides the swelling / thickness labels used for supervised training.
+- The **raw dataset** provides the high-resolution time-domain signal needed for device-side ECM fitting.
+
+So the usual training flow is:
+
+```text
+workbook dataset -> labels + cycle/DCIR/capacity features
+raw dataset      -> time-domain ECM-inspired features
+merge by serial/cycle -> model training
+```
+
+## Main Workflows
+
+### A. Frequency-Domain ECM Workflow
+
+Use workbook EIS sheets to fit ECM parameters with `src/ecm_fit.py`, then summarize those results into ML-ready features or time-domain priors.
+
+### B. Time-Domain ECM Workflow
+
+Use raw `current / voltage / time` data to extract device-side ECM-inspired features with `src/extract_device_ecm_features.py`.
+
+The simplified time-domain ECM used in this branch is:
+
+```text
+Vocv - R0 - (Rsei || Csei) - Rct - (Rw1 || Cw1) - (Rw2 || Cw2)
+```
+
+ASCII sketch:
+
+```text
+Vocv
+  +
+  |
+  o---[ R0 ]---+---[ Rsei ]---+---[ Rct ]---+---[ Rw1 ]---+---[ Rw2 ]---o Vt
+               |              |              |            |            |
+               +----|| Csei---+              +----|| Cw1--+----|| Cw2--+
+  |
+ GND
+```
+
+In this formulation:
+
+- `R0` captures the instantaneous ohmic contribution
+- `Rsei || Csei` captures a fast SEI-related relaxation branch
+- `Rct` is a charge-transfer-related resistive term
+- `(Rw1 || Cw1)` and `(Rw2 || Cw2)` approximate the Warburg / diffusion tail with a small RC chain
+
+### C. Model Training Workflow
+
+Use `src/build_feature_table.py` to build a cycle-level ML table, optionally merge raw-derived time-domain features, then train models with:
+
+- `src/train_swelling_models.py` for classical ML / XGBoost
+- `src/train_swelling_deep.py` for MLP/CNN/LSTM
+- `src/train_swelling_transformer.py` for Transformer models
+
+## Quick Start
+
+### 1) Frequency-domain baseline
+
+```bash
+python src/ecm_fit.py \
+  --xlsx_dir "./dataset/udc_xlsx" \
+  --recursive \
+  --sheet "02_PreEIS" \
+  --circuit "R0-p(R1,CPE1)-p(R2,CPE2)-W1" \
+  --guess "" \
+  --out_dir "./data/ecm/ecm_w_cycle"
+```
+
+### 2) Build a labeled feature table
+
+```bash
+python src/build_feature_table.py \
+  --xlsx_dir "./dataset/udc_xlsx" \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_csv "./data/ml/feature_table.csv" \
+  --min_cycle 5 \
+  --max_cycle 200 \
+  --future_k 20 \
+  --soc_target 50 \
+  --dcir_align_mode last_le
+```
+
+### 3) Device-side time-domain ECM features
+
+```bash
+python src/build_eis_time_domain_priors.py \
+  --ecm_dir "./data/ecm/ecm_w_cycle" \
+  --out_csv "./data/ml/eis_time_domain_priors.csv"
+```
+
+```bash
+python src/extract_device_ecm_features.py \
+  --raw_dir "./dataset/raw_data" \
+  --eis_prior_csv "./data/ml/eis_time_domain_priors.csv" \
+  --prior_mode global \
+  --fit_mode td_only \
+  --cycle_mode last \
+  --out_csv "./data/ml/device_ecm_with_priors.csv"
+```
+
+### 4) Train a classical model
+
+```bash
+python src/train_swelling_models.py \
+  --table_csv "./data/ml/feature_table.csv" \
+  --out_dir "./data/ml/results" \
+  --target_mode current \
+  --label_mode absolute \
+  --max_input_cycle 50
+```
 
 ## Project Structure
 
 - `src/`: analysis, fitting, feature engineering, modeling, and visualization scripts
-  - `cycle_plot.py`, `eis_plot.py`: UDC cycle and EIS plotting utilities
+  - `cycle_plot.py`, `eis_plot.py`: workbook cycle and EIS plotting utilities
   - `ecm_fit.py`: equivalent-circuit-model fitting and fit-quality logging
   - `build_eis_time_domain_priors.py`: convert frequency-domain ECM outputs into time-domain priors (`init/lb/ub`)
-  - `build_feature_table.py`: unified ML feature table builder from UDC + ECM outputs
+  - `build_feature_table.py`: unified ML feature table builder from workbook data + ECM outputs
   - `extract_device_ecm_features.py`: extract time-domain ECM-inspired features from raw device `voltage/current/time`
   - `train_swelling_models.py`, `run_experiment_from_config.py`: classical ML/XGBoost training workflows
   - `train_swelling_deep.py`, `train_swelling_transformer.py`: optional neural-network and Transformer models
@@ -20,7 +188,7 @@ Utilities for battery UDC Excel analysis:
   - `run_diff_soc_experiments.py`: automate multi-SOC correlation / importance experiments
   - `plot_*`, `check_*`, `filter_*`: diagnostics, correlation plots, alignment checks, feature importance, and result visualizations
 - `configs/experiments/`: JSON configs for reproducible training runs
-- `dataset/`: input UDC datasets; large/private datasets should be kept outside Git when needed
+- `dataset/`: example location for workbook datasets and raw device datasets; large/private datasets can be stored elsewhere and passed by path
 - `data/`: generated outputs such as ECM fits, feature tables, model results, plots, and logs
 - `requirements.txt`: Python dependencies for the main analysis workflow
 - `ecm_time_domain_fitting.md`, `time_domain_report.md`: design notes and progress report for the time-domain ECM workflow
@@ -692,7 +860,7 @@ To inspect the raw device-data source before time-domain fitting:
 
 ```bash
 python src/plot_raw_maccor_signals.py \
-  --raw_dir "./dataset/raw_data/HYCL" \
+  --raw_dir "./dataset/raw_data" \
   --out_dir "./data/raw_viz"
 ```
 
@@ -711,7 +879,7 @@ To compare DCIR/ECM behavior across multiple SOC targets:
 
 ```bash
 python src/run_diff_soc_experiments.py \
-  --xlsx_dir "./dataset/OneDrive_1_2-20-2026" \
+  --xlsx_dir "./dataset/udc_xlsx" \
   --ecm_dir "./data/ecm_w_cycle" \
   --out_root "./data/diff_soc_runs" \
   --socs "0,10,20,30,40,50,60,70,80,90,100" \
