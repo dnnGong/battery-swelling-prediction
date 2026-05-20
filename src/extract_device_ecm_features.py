@@ -61,6 +61,11 @@ def maybe_downsample_pair(t_s: np.ndarray, v: np.ndarray, max_points: int = 400)
     return x[idx], y[idx]
 
 
+def count_effective_relax_points(t_s: np.ndarray, v: np.ndarray, max_points: int = 400) -> int:
+    x, _ = maybe_downsample_pair(t_s, v, max_points=max_points)
+    return int(len(x))
+
+
 def rc_chain_relax_model(
     t: np.ndarray,
     v_inf: float,
@@ -570,6 +575,44 @@ def detect_relaxation_segments(
     return segments
 
 
+def score_relaxation_segment(df: pd.DataFrame, seg: Dict[str, float]) -> Tuple[int, float]:
+    start = int(seg["start_idx"])
+    end = int(seg["end_idx"])
+    sub = df.iloc[start:end].copy()
+    t = pd.to_numeric(sub["test_time_s"], errors="coerce").to_numpy(dtype=float)
+    v = pd.to_numeric(sub["voltage_v"], errors="coerce").to_numpy(dtype=float)
+    if len(sub) == 0 or not np.isfinite(t).any() or not np.isfinite(v).any():
+        return 0, float(seg.get("duration_s", 0.0))
+    t0 = float(t[0])
+    t_rel = t - t0
+    return count_effective_relax_points(t_rel, v), float(seg.get("duration_s", 0.0))
+
+
+def choose_relaxation_segment(
+    df: pd.DataFrame,
+    segs: List[Dict[str, float]],
+    strategy: str = "longest",
+) -> Dict[str, float]:
+    if not segs:
+        raise ValueError("No relaxation segments available")
+    mode = (strategy or "longest").strip().lower()
+    if mode == "first":
+        return segs[0]
+    if mode == "most_points":
+        return max(segs, key=lambda s: score_relaxation_segment(df, s))
+    if mode == "best_td":
+        # Prefer more identifiable segments first, then longer duration, then stronger pre-current.
+        return max(
+            segs,
+            key=lambda s: (
+                score_relaxation_segment(df, s)[0],
+                score_relaxation_segment(df, s)[1],
+                abs(float(s.get("i_prev_a", 0.0))),
+            ),
+        )
+    return max(segs, key=lambda x: x["duration_s"])
+
+
 def summarize_relaxation_segment(
     df: pd.DataFrame,
     seg: Dict[str, float],
@@ -591,6 +634,11 @@ def summarize_relaxation_segment(
         "feat_dev_pre_current_a": float(seg["i_prev_a"]),
         "feat_dev_pre_voltage_v": float(seg["v_before_v"]),
         "feat_dev_relax_start_voltage_v": float(seg["v_start_v"]),
+        "feat_dev_r0_abs_proxy_ohm": (
+            float(abs(seg["v_before_v"] - seg["v_start_v"]) / abs(seg["i_prev_a"]))
+            if np.isfinite(seg["v_before_v"]) and np.isfinite(seg["v_start_v"]) and abs(seg["i_prev_a"]) > 1e-9
+            else float("nan")
+        ),
         "feat_dev_r0_proxy_ohm": (
             float((seg["v_before_v"] - seg["v_start_v"]) / abs(seg["i_prev_a"]))
             if np.isfinite(seg["v_before_v"]) and np.isfinite(seg["v_start_v"]) and abs(seg["i_prev_a"]) > 1e-9
@@ -634,6 +682,17 @@ def summarize_relaxation_segment(
 
     i_abs = abs(seg["i_prev_a"])
     if i_abs > 1e-9:
+        instantaneous_total = out.get("feat_dev_r0_abs_proxy_ohm", np.nan)
+        prior_r0 = _finite_or(
+            prior_row.get("prior_R0_ohm", prior_row.get("prior_Rs_ohm", np.nan)) if prior_row is not None else np.nan,
+            np.nan,
+        )
+        out["feat_dev_td_R0Rct_proxy_ohm"] = float(instantaneous_total) if np.isfinite(instantaneous_total) else float("nan")
+        out["feat_dev_td_R0_ohm"] = float(prior_r0) if np.isfinite(prior_r0) else float("nan")
+        if np.isfinite(instantaneous_total) and np.isfinite(prior_r0):
+            out["feat_dev_td_Rct_ohm"] = float(max(0.0, instantaneous_total - prior_r0))
+        else:
+            out["feat_dev_td_Rct_ohm"] = float("nan")
         if np.isfinite(out["feat_dev_a1_v"]):
             out["feat_dev_R1_proxy_ohm"] = float(abs(out["feat_dev_a1_v"]) / i_abs)
         if np.isfinite(out["feat_dev_a2_v"]):
@@ -662,6 +721,7 @@ def summarize_relaxation_segment(
         td_rvals = [
             out.get("feat_dev_r0_proxy_ohm", np.nan),
             out.get("feat_dev_td_Rsei_ohm", np.nan),
+            out.get("feat_dev_td_Rct_ohm", np.nan),
             out.get("feat_dev_td_Rw1_ohm", np.nan),
             out.get("feat_dev_td_Rw2_ohm", np.nan),
         ]
@@ -671,6 +731,9 @@ def summarize_relaxation_segment(
         )
         out["feat_dev_td_R_total_proxy_ohm"] = float(sum(td_rvals)) if td_rvals else float("nan")
     else:
+        out["feat_dev_td_R0Rct_proxy_ohm"] = float("nan")
+        out["feat_dev_td_R0_ohm"] = float("nan")
+        out["feat_dev_td_Rct_ohm"] = float("nan")
         out["feat_dev_R1_proxy_ohm"] = float("nan")
         out["feat_dev_R2_proxy_ohm"] = float("nan")
         out["feat_dev_R_total_proxy_ohm"] = float("nan")
@@ -704,11 +767,25 @@ def extract_device_ecm_features_for_file(
         grouped = [grouped[-1]]
     elif cycle_mode == "first" and grouped:
         grouped = [grouped[0]]
+    elif cycle_mode == "best" and grouped:
+        best_cycle_item: Optional[Tuple[float, pd.DataFrame, Dict[str, float], Tuple[int, float]]] = None
+        for cycle_c, sub in grouped:
+            segs = detect_relaxation_segments(sub)
+            if not segs:
+                continue
+            seg = choose_relaxation_segment(sub.sort_values("test_time_s").reset_index(drop=True), segs, strategy=choose)
+            score = score_relaxation_segment(sub.sort_values("test_time_s").reset_index(drop=True), seg)
+            item = (cycle_c, sub, seg, score)
+            if best_cycle_item is None or item[3] > best_cycle_item[3]:
+                best_cycle_item = item
+        if best_cycle_item is not None:
+            grouped = [(best_cycle_item[0], best_cycle_item[1])]
     for cycle_c, sub in grouped:
         segs = detect_relaxation_segments(sub)
         if not segs:
             continue
-        seg = max(segs, key=lambda x: x["duration_s"]) if choose == "longest" else segs[0]
+        sub_sorted = sub.sort_values("test_time_s").reset_index(drop=True)
+        seg = choose_relaxation_segment(sub_sorted, segs, strategy=choose)
         prior_row = _select_prior_row(
             serial_norm,
             float(cycle_c),
@@ -718,7 +795,7 @@ def extract_device_ecm_features_for_file(
             group_tag=str(df["group_tag"].iloc[0]),
         )
         feat = summarize_relaxation_segment(
-            sub.sort_values("test_time_s").reset_index(drop=True),
+            sub_sorted,
             seg,
             prior_row=prior_row,
             fit_mode=fit_mode,
@@ -901,7 +978,8 @@ def main() -> None:
     )
     ap.add_argument("--prior_align_mode", default="last_le", choices=["last_le", "exact"], help="How to align EIS prior rows to raw-data cycle_c when --eis_prior_csv is provided.")
     ap.add_argument("--fit_mode", default="full", choices=["full", "td_only"], help="Whether to run all exploratory fits or only the mentor-style constrained time-domain fitter.")
-    ap.add_argument("--cycle_mode", default="all", choices=["all", "first", "last"], help="Whether to extract features for all raw cycles or only one representative cycle per file.")
+    ap.add_argument("--cycle_mode", default="all", choices=["all", "first", "last", "best"], help="Whether to extract features for all raw cycles or only one representative cycle per file.")
+    ap.add_argument("--segment_choice", default="longest", choices=["longest", "first", "most_points", "best_td"], help="How to choose a relaxation segment within a cycle.")
     ap.add_argument("--feature_table_csv", default="", help="Optional feature table to augment.")
     ap.add_argument("--out_feature_table_csv", default="", help="Optional output merged feature table.")
     ap.add_argument("--align_mode", default="last_le", choices=["last_le", "exact"], help="How to align device-cycle features to cycle_t when merging.")
@@ -925,6 +1003,7 @@ def main() -> None:
         try:
             one = extract_device_ecm_features_for_file(
                 p,
+                choose=args.segment_choice,
                 prior_df=prior_df,
                 prior_align_mode=args.prior_align_mode,
                 prior_mode=args.prior_mode,
