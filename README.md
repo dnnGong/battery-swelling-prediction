@@ -203,81 +203,7 @@ Install dependencies:
 pip install numpy pandas matplotlib openpyxl scipy impedance scikit-learn xgboost
 ```
 
-## 1) cycle_plot.py
-
-Generate cycle-related curves from sheets:
-- `03-1_Cycle`
-- `03-1_CycleMeasure`
-- `03-1_CycleDCIR`
-
-### CLI
-
-```bash
-python src/cycle_plot.py --xlsx <xlsx_path> --out <output_dir> [--serial <serial>]
-```
-
-### Parameters
-
-- `--xlsx` (required): CL UDC xlsx path
-- `--out` (required): output root directory
-- `--serial` (optional): if provided, run only this serial; if omitted, auto-detect and run all serials
-
-### Example
-
-```bash
-python src/cycle_plot.py \
-  --xlsx "/path/to/CL-TC1-UDC.xlsx" \
-  --out "./data/test_cycle"
-```
-
-### Output
-
-Outputs are grouped by serial:
-
-```text
-data/test_cycle/<serial>/CL_DischargeCapacity_vs_Cycle__<serial>.png
-data/test_cycle/<serial>/CL_Thickness2_vs_Cycle__<serial>.png
-data/test_cycle/<serial>/CL_OCV_vs_Cycle__<serial>.png
-data/test_cycle/<serial>/CL_ACIR_vs_Cycle__<serial>.png
-data/test_cycle/<serial>/CL_DCIR_vs_Cycle_by_SOC__<serial>.png
-data/test_cycle/<serial>/CL_OCV_vs_Cycle_by_SOC__<serial>.png
-```
-
-## 2) eis_plot.py
-
-Scan workbook sheets and generate EIS plots by serial block.
-
-### CLI
-
-```bash
-python src/eis_plot.py --xlsx <xlsx_path> --out <output_dir> [--serial <serial>] [--invert-imag]
-```
-
-### Parameters
-
-- `--xlsx` (required): UDC xlsx path
-- `--out` (required): output root directory
-- `--serial` (optional): only process this serial
-- `--invert-imag` (optional): Nyquist y-axis uses `-Imag`
-
-### Example
-
-```bash
-python src/eis_plot.py \
-  --xlsx "/path/to/test1.xlsx" \
-  --out "./data/test_eis" \
-  --invert-imag
-```
-
-### Output
-
-```text
-data/test_eis/<serial>/<sheet>__blkK_nyquist.png
-data/test_eis/<serial>/<sheet>__blkK_bode_mag.png
-data/test_eis/<serial>/<sheet>__blkK_bode_phase.png
-```
-
-## 3) ecm_fit.py
+## 1) ecm_fit.py
 
 Fit EIS data to ECM model (default: no-Warburg 2-CPE):
 - default circuit: `R0-p(R1,CPE1)-p(R2,CPE2)`
@@ -403,7 +329,7 @@ data/test_ecm/<group>/<xlsx_stem>/<serial>/fit_result__<sheet>__block<k>.json
 - `eis_plot.py`/`ecm_fit.py` require EIS sheets with numeric frequency/real/imag data.
 - If your environment cannot import dependencies, activate your project venv first.
 
-## 4) ML Pipeline (ECM + Other Features)
+## 2) ML Pipeline (ECM + Other Features)
 
 This project now includes multiple scripts for swelling prediction modeling:
 
@@ -1302,4 +1228,82 @@ python src/plot_feature_corr.py \
   --method spearman \
   --annot \
   --mode features_targets
+```
+
+## Appendix: Workbook Plotting Utilities
+
+These scripts are useful for workbook-level visualization, but they are not part of the core ECM-to-ML workflow.
+
+### A) cycle_plot.py
+
+Generate cycle-related curves from sheets:
+- `03-1_Cycle`
+- `03-1_CycleMeasure`
+- `03-1_CycleDCIR`
+
+#### CLI
+
+```bash
+python src/cycle_plot.py --xlsx <xlsx_path> --out <output_dir> [--serial <serial>]
+```
+
+#### Parameters
+
+- `--xlsx` (required): workbook xlsx path
+- `--out` (required): output root directory
+- `--serial` (optional): if provided, run only this serial; if omitted, auto-detect and run all serials
+
+#### Example
+
+```bash
+python src/cycle_plot.py \
+  --xlsx "/path/to/TC1-UDC.xlsx" \
+  --out "./data/test_cycle"
+```
+
+#### Output
+
+Outputs are grouped by serial:
+
+```text
+data/test_cycle/<serial>/DischargeCapacity_vs_Cycle__<serial>.png
+data/test_cycle/<serial>/Thickness2_vs_Cycle__<serial>.png
+data/test_cycle/<serial>/OCV_vs_Cycle__<serial>.png
+data/test_cycle/<serial>/ACIR_vs_Cycle__<serial>.png
+data/test_cycle/<serial>/DCIR_vs_Cycle_by_SOC__<serial>.png
+data/test_cycle/<serial>/OCV_vs_Cycle_by_SOC__<serial>.png
+```
+
+### B) eis_plot.py
+
+Scan workbook sheets and generate EIS plots by serial block.
+
+#### CLI
+
+```bash
+python src/eis_plot.py --xlsx <xlsx_path> --out <output_dir> [--serial <serial>] [--invert-imag]
+```
+
+#### Parameters
+
+- `--xlsx` (required): workbook xlsx path
+- `--out` (required): output root directory
+- `--serial` (optional): only process this serial
+- `--invert-imag` (optional): Nyquist y-axis uses `-Imag`
+
+#### Example
+
+```bash
+python src/eis_plot.py \
+  --xlsx "/path/to/test1.xlsx" \
+  --out "./data/test_eis" \
+  --invert-imag
+```
+
+#### Output
+
+```text
+data/test_eis/<serial>/<sheet>__blkK_nyquist.png
+data/test_eis/<serial>/<sheet>__blkK_bode_mag.png
+data/test_eis/<serial>/<sheet>__blkK_bode_phase.png
 ```
