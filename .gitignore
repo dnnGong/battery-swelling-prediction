@@ -1,0 +1,20 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Local data / generated outputs
+data/
+dataset/
+
+# Virtual environments
+.venv/
+venv/
+
+# macOS / editor noise
+.Spotlight-V100
+.Trashes
