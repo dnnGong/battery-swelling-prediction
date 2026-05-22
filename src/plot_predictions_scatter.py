@@ -13,6 +13,14 @@ def build_out_path(base: Path, tag: str) -> Path:
     return base.with_name(f"{base.stem}__{tag}{base.suffix or '.png'}")
 
 
+def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    if ss_tot <= 0.0:
+        return float("nan")
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    return float(1.0 - (ss_res / ss_tot))
+
+
 def plot_one(ax: plt.Axes, sub: pd.DataFrame, title: str) -> None:
     y_true = sub["y_true"].to_numpy(dtype=float)
     y_pred = sub["y_pred"].to_numpy(dtype=float)
@@ -25,7 +33,12 @@ def plot_one(ax: plt.Axes, sub: pd.DataFrame, title: str) -> None:
 
     rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     mae = float(np.mean(np.abs(y_true - y_pred)))
-    ax.set_title(f"{title}\nN={len(sub)} RMSE={rmse:.4g} MAE={mae:.4g}", fontsize=10)
+    r2 = safe_r2(y_true, y_pred)
+    r2_text = "nan" if not np.isfinite(r2) else f"{r2:.4g}"
+    ax.set_title(
+        f"{title}\nN={len(sub)} RMSE={rmse:.4g} MAE={mae:.4g} R^2={r2_text}",
+        fontsize=10,
+    )
     ax.set_xlabel("y_true")
     ax.set_ylabel("y_pred")
     ax.grid(alpha=0.25)
